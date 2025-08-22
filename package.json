@@ -1,0 +1,28 @@
+{
+  "name": "@0xsend/send-token-upgrade",
+  "version": "0.0.3",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox-viem": "^3.0.0",
+    "@types/bun": "latest",
+    "hardhat": "^2.22.17",
+    "@openzeppelin/contracts": "^5.1.0",
+    "dotenv": "^16.4.7",
+    "zx": "^8.3.0"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "scripts": {
+    "test": "hardhat test"
+  },
+  "files": [
+    "artifacts",
+    "ignition",
+    "contracts",
+    "bin",
+    "README.md",
+    "package.json",
+    "tsconfig.json",
+    "hardhat.config.ts"
+  ]
+}

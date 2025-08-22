@@ -1,0 +1,2 @@
+[install.scopes]
+"0xsend" = { token = "$npm_token", url = "https://registry.npmjs.org/" }
