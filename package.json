@@ -1,5 +1,5 @@
 {
-  "name": "@0xsend/send-token-upgrade",
+  "name": "@0xsend/super-send-token",
   "version": "0.0.3",
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox-viem": "^3.0.0",
