@@ -17,6 +17,7 @@ const config: HardhatUserConfig = {
     anvil: {
       url: "http://127.0.0.1:8546",
       chainId: 845337,
+      accounts: process.env.EOA_DEPLOYER ? [process.env.EOA_DEPLOYER] : undefined,
     },
     sepolia: {
       url: "https://sepolia.base.org",

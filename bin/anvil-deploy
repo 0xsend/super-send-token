@@ -3,22 +3,43 @@ import "zx/globals";
 $.verbose = true;
 
 /**
- * Wrapper-only deploy orchestrator (placeholder).
- * PR4 will introduce scripts/wrapper/create.ts that actually creates/attaches the wrapper.
- * For now, this script just ensures anvil is in a stable state for local dev.
+ * Wrapper deploy orchestrator (local anvil fork).
+ * - Ensures anvil mining settings
+ * - Funds EOA_DEPLOYER if present
+ * - Creates/attaches the wrapper via scripts/wrapper/create.ts
  */
+
+import { privateKeyToAccount } from "viem/accounts";
 
 const RPC_URL = "http://localhost:8546";
 
 const info = (msg: TemplateStringsArray, ..._: any[]) =>
   console.log(chalk.blue(msg.join(" ")));
+const warn = (msg: TemplateStringsArray, ..._: any[]) =>
+  console.log(chalk.yellow(msg.join(" ")));
 
 void (async function main() {
   info`Enable auto-mining...`;
   await $`cast rpc --rpc-url ${RPC_URL} evm_setAutomine true`;
 
-  // TODO: Wrapper deploy will be added in PR4 (scripts/wrapper/create.ts)
-  info`Skipping wrapper deploy for now (placeholder)`;
+  // Fund EOA_DEPLOYER for gas on the fork if provided
+  const pk = $.env.EOA_DEPLOYER;
+  if (pk && pk.startsWith("0x") && pk.length >= 66) {
+    const acct = privateKeyToAccount(pk as `0x${string}`);
+    info`Funding EOA_DEPLOYER ${acct.address}...`;
+    await $`cast send --rpc-url ${RPC_URL} \
+              --unlocked \
+              --from 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
+              ${acct.address} \
+              --value 10ether`;
+
+    info`Creating or attaching wrapper on anvil (CREATE_WRAPPER=true)...`;
+    // Ensure the wrapper is created/attached using Hardhat + Viem with the EOA_DEPLOYER signer
+    $.env.CREATE_WRAPPER = "true";
+    await $`bunx hardhat run scripts/wrapper/create.ts --network anvil`;
+  } else {
+    warn`EOA_DEPLOYER not provided; skipping wrapper creation.`;
+  }
 
   info`Disable auto-mining...`;
   await $`cast rpc --rpc-url ${RPC_URL} evm_setAutomine false`;
