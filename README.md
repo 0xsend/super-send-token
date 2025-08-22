@@ -20,7 +20,16 @@ Scripts and flows
   ```sh
   bun run test
   ```
-- Local deploy orchestration (placeholder until PR4 adds wrapper script):
+- Local wrapper discovery/creation (PR4):
+  - Discover existing wrapper or create if not present (set CREATE_WRAPPER=true):
+    ```sh
+    CREATE_WRAPPER=true bunx hardhat run scripts/wrapper/create.ts --network anvil
+    ```
+  - Or against base/mainnet:
+    ```sh
+    bunx hardhat run scripts/wrapper/create.ts --network base
+    ```
+- Local deploy orchestration (anvil state helper):
   ```sh
   ./bin/anvil-deploy
   ```
