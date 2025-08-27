@@ -89,3 +89,39 @@ References (mirror-only; no custom patterns)
 - ERC‑4626 broadcasts:
   - /Users/vict0xr/Documents/Send/send-earn-contracts/broadcast/DeploySendEarn.s.sol
 
+---
+
+Update (implemented, Phase 1 hardening)
+
+This section documents the finalized behavior now shipped in contracts/rewards/RewardsManagerAssets.sol and related scripts.
+
+- Constructor signature (updated)
+  - RewardsManagerAssets(sendV1, superTokenFactory, sendEarnFactory, asset, admin)
+  - Note: ignition/parameters/RewardsManagerAssets.sample.json and ignition/modules/RewardsManagerAssets.ts now include sendEarnFactory.
+
+- Vault validation and affiliate normalization
+  - A vault is accepted if either:
+    - SendEarnFactory.isSendEarn(vault) is true, or
+    - SendEarnFactory.affiliates(affiliate) returns a non-zero SendEarn vault; in this case, the affiliate address is normalized to the underlying SendEarn vault before accounting.
+  - The single-asset invariant still applies: IERC4626(vault).asset() == asset (e.g., USDC).
+  - Example interface mirrored: send-earn-contracts/src/interfaces/ISendEarnFactory.sol (isSendEarn, affiliates).
+
+- Roles and authorization
+  - Sync is permissionless: anyone may call syncVault(vault), syncVault(vault, who), and the batch variants. Calls are safe and idempotent because units are set from true on-chain balances via IERC4626.convertToAssets.
+  - DEFAULT_ADMIN_ROLE remains for administrative concerns (e.g., future configuration), while SEND_ACCOUNT_ROLE and SYNC_OPERATOR_ROLE are currently not required for sync.
+  - Rationale: avoids any off-chain bot dependency; lets any party keep state fresh while preserving correctness.
+
+- Aggregation and pool units (unchanged)
+  - For each (user, normalizedVault):
+    - shares = IERC20(normalizedVault).balanceOf(user)
+    - assets = IERC4626(normalizedVault).convertToAssets(shares)
+    - lastAssetsByVault[user][normalizedVault], totalAssetsByUser[user] updated accordingly
+    - pool.updateMemberUnits(user, uint128(totalAssetsByUser[user]))
+
+- Deployment and persistence
+  - Resolve sendEarnFactory via env SEND_EARN_FACTORY, or parse send-earn-contracts broadcast run-latest.json (same pattern used for the share token discovery).
+  - Deploy script persists sendEarnFactory alongside rewardsManager, pool, sendV1, superTokenFactory, shareToken (if resolved), asset, chainId.
+
+- Streaming (deferred)
+  - Oracle and 3% SENDx distribution flow are intentionally omitted in this phase and will be added later with explicit oracle + funding configuration.
+
