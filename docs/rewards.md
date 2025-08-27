@@ -35,6 +35,7 @@
 - Fund a holder with vault shares on a fork (for rewards tests)
   - VAULT_ADDRESS=0x... SHARE_HOLDER=0x... AMOUNT_ASSETS=... \
     bunx hardhat run scripts/rewards/fundHolder.ts --network anvil
+- Streaming checks run on the default hardhat Base fork. Ensure BASE_RPC is reachable (or set BASE_FORK_BLOCK for stability).
 
 ## Commit history (base → top)
 

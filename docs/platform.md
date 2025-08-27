@@ -60,6 +60,30 @@
   - Export envs for gated tests (e.g., SHARE_TOKEN_ADDRESS, SHARE_HOLDER)
   - bunx hardhat test --network anvil
 - Gate network-dependent tests via envs so CI can run a minimal subset.
+- For Hardhat's built-in fork, pin a block for stability:
+  - export BASE_FORK_BLOCK=<stable_block_number>
+  - bunx hardhat test  # hardhat will fork BASE_RPC at that block
+
+## Verification helpers
+- Verify Superfluid bytecode on the current network (hardhat/anvil/base):
+  - bunx hardhat run scripts/check/superfluid.ts --network hardhat
+
+## Fast local fork (Docker + Anvil)
+Use the zx-based helper to run an Anvil Base fork with pinned block, small
+block time, and prefetch of common contracts to avoid cold-start delays.
+
+Env:
+- ANVIL_BASE_FORK_URL (required): RPC for Base mainnet (e.g., Alchemy/Infura)
+- ANVIL_BASE_BLOCK_TIME (default "2"): seconds between blocks
+- ANVIL_BASE_EXTRA_ARGS (default "--silent"): extra Anvil flags
+- NEXT_PUBLIC_BASE_CHAIN_ID (default "845337"): chain id to expose
+- ANVIL_DOCKER_NETWORK (optional): docker network name
+
+Run:
+- bunx zx scripts/dev/anvil-base.ts
+
+Then test against the anvil network:
+- bunx hardhat test --network anvil
 
 ## References
 - Hardhat + viem: https://github.com/NomicFoundation/hardhat-viem

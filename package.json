@@ -18,7 +18,9 @@
     "typescript": "^5.0.0"
   },
   "scripts": {
-    "test": "hardhat test"
+    "test": "hardhat test",
+    "dev:anvil-base": "bunx zx scripts/dev/anvil-base.ts",
+    "check:superfluid": "bunx hardhat run scripts/check/superfluid.ts --network hardhat"
   },
   "files": [
     "artifacts",

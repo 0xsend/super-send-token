@@ -4,31 +4,42 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
+const BASE_RPC = process.env.BASE_RPC || "https://mainnet.base.org";
+const BASE_FORK_BLOCK = process.env.BASE_FORK_BLOCK
+  ? Number(process.env.BASE_FORK_BLOCK)
+  : undefined;
+
+const DEPLOYER = process.env.EOA_DEPLOYER;
+
 const config: HardhatUserConfig = {
   solidity: "0.8.28",
   networks: {
-    // base mainnet network
+    // Base mainnet fork as default local network
     hardhat: {
       chainId: 8453,
       hardfork: "cancun",
       forking: {
-        url: "https://mainnet.base.org",
+        url: BASE_RPC,
+        // Pin a block for stability when provided
+        blockNumber: BASE_FORK_BLOCK,
       },
     },
     anvil: {
       url: "http://127.0.0.1:8546",
       chainId: 845337,
-      accounts: process.env.EOA_DEPLOYER ? [process.env.EOA_DEPLOYER] : undefined,
+      accounts: DEPLOYER ? [DEPLOYER] : undefined,
     },
     sepolia: {
       url: "https://sepolia.base.org",
       chainId: 84532,
-      accounts: [process.env.EOA_DEPLOYER!],
+      // Optional: only include account if provided to avoid HH8 when unset
+      accounts: DEPLOYER ? [DEPLOYER] : [],
     },
     base: {
       url: "https://mainnet.base.org",
       chainId: 8453,
-      accounts: [process.env.EOA_DEPLOYER!],
+      // Optional: only include account if provided to avoid HH8 when unset
+      accounts: DEPLOYER ? [DEPLOYER] : [],
     },
   },
   etherscan: {
