@@ -10,6 +10,7 @@ const config: HardhatUserConfig = {
     // base mainnet network
     hardhat: {
       chainId: 8453,
+      hardfork: "cancun",
       forking: {
         url: "https://mainnet.base.org",
       },
