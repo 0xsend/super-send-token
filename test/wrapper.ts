@@ -104,12 +104,7 @@ describe("SuperToken wrapper (backend-only)", () => {
     expect(underlyingAddr.toLowerCase()).to.equal(cfg.sendV1.toLowerCase());
   });
 
-  it("upgrade and downgrade round-trip (gated by SEND_HOLDER)", async function () {
-    const holder = process.env.SEND_HOLDER as `0x${string}` | undefined;
-    if (!holder) {
-      this.skip();
-    }
-
+  it("upgrade and downgrade round-trip (no env, local mock wrapper)", async function () {
     const publicClient = await hre.viem.getPublicClient();
     const [walletClient] = await hre.viem.getWalletClients();
     if (!walletClient) this.skip();
@@ -117,35 +112,52 @@ describe("SuperToken wrapper (backend-only)", () => {
     const chainId = await publicClient.getChainId();
     const cfg = getConfig(chainId);
 
-    const addr = await getWrapperAddress();
-    if (!addr || !(await isValidWrapper(addr))) {
-      this.skip();
-    }
+    // Create a wrapper for a locally deployed mock ERC20 and round-trip
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const SuperTokenFactoryJson = await import("@superfluid-finance/ethereum-contracts/build/truffle/SuperTokenFactory.json");
 
-    // Impersonate and fund holder for gas
-    await impersonateAccount(holder!);
-    await setBalance(holder!, 10n * 10n ** 18n);
+    // Deploy mock underlying
+    const artifactsRoot = path.resolve(__dirname, "..", "artifacts", "contracts");
+    const mockErc20Artifact = await (async () => {
+      try { return JSON.parse(await (await import("fs/promises")).readFile(path.resolve(artifactsRoot, "mocks", "MockERC20.sol", "MockERC20.json"), "utf8")); } catch { return null; }
+    })();
+    if (!mockErc20Artifact?.abi) this.skip();
+    const erc20Abi = mockErc20Artifact.abi as any[];
+    const erc20Bytecode = (mockErc20Artifact.bytecode?.object ?? mockErc20Artifact.bytecode) as `0x${string}`;
+    const hashUnderlying = await walletClient.deployContract({ abi: erc20Abi, bytecode: erc20Bytecode, args: ["MOCK", "MOCK", 18], account: walletClient.account! });
+    const receiptUnderlying = await publicClient.waitForTransactionReceipt({ hash: hashUnderlying });
+    const underlyingAddr = receiptUnderlying.contractAddress as `0x${string}`;
+
+    // Create wrapper via factory
+    const factory = getContract({ address: cfg.superTokenFactory, abi: (SuperTokenFactoryJson as any).default.abi as any[], client: { public: publicClient, wallet: walletClient } });
+    const { request: createReq, result: wrapperRes } = await factory.simulate.createERC20Wrapper([underlyingAddr, 18, 1, cfg.wrapperName, cfg.wrapperSymbol], { account: walletClient.account! });
+    const createHash = await walletClient.writeContract(createReq);
+    await publicClient.waitForTransactionReceipt({ hash: createHash });
+    const addr = wrapperRes as unknown as `0x${string}`;
 
     const superToken = getContract({ address: addr!, abi: ISuperTokenJson.abi as any[], client: { public: publicClient, wallet: walletClient } });
-    const underlying = getContract({ address: cfg.sendV1, abi: IERC20Json.abi as any[], client: { public: publicClient, wallet: walletClient } });
+    const underlying = getContract({ address: underlyingAddr, abi: IERC20Json.abi as any[], client: { public: publicClient, wallet: walletClient } });
 
-    // amount = 1e18
     const amount = 10n ** 18n;
 
+    // Mint to ourselves via MockERC20.mint
+    const mintAbi = [{ type: "function", name: "mint", stateMutability: "nonpayable", inputs: [{ name: "to", type: "address" }, { name: "amount", type: "uint256" }], outputs: [] }] as const;
+    const minter = getContract({ address: underlyingAddr, abi: mintAbi as any, client: { public: publicClient, wallet: walletClient } });
+    await minter.write.mint([walletClient.account!.address, amount]);
+
     const [u0Raw, s0Raw] = await Promise.all([
-      underlying.read.balanceOf([holder!]),
-      superToken.read.balanceOf([holder!]),
+      underlying.read.balanceOf([walletClient.account!.address]),
+      superToken.read.balanceOf([walletClient.account!.address]),
     ]);
     const u0 = u0Raw as unknown as bigint;
     const s0 = s0Raw as unknown as bigint;
 
-    // Approve wrapper and upgrade
-    await underlying.write.approve([addr!, amount], { account: holder! });
-    await superToken.write.upgrade([amount], { account: holder! });
+    await underlying.write.approve([addr!, amount], { account: walletClient.account! });
+    await superToken.write.upgrade([amount], { account: walletClient.account! });
 
     const [u1Raw, s1Raw] = await Promise.all([
-      underlying.read.balanceOf([holder!]),
-      superToken.read.balanceOf([holder!]),
+      underlying.read.balanceOf([walletClient.account!.address]),
+      superToken.read.balanceOf([walletClient.account!.address]),
     ]);
     const u1 = u1Raw as unknown as bigint;
     const s1 = s1Raw as unknown as bigint;
@@ -153,11 +165,10 @@ describe("SuperToken wrapper (backend-only)", () => {
     expect(u1).to.equal(u0 - amount);
     expect(s1).to.equal(s0 + amount);
 
-    // Downgrade back
-    await superToken.write.downgrade([amount], { account: holder! });
+    await superToken.write.downgrade([amount], { account: walletClient.account! });
     const [u2Raw, s2Raw] = await Promise.all([
-      underlying.read.balanceOf([holder!]),
-      superToken.read.balanceOf([holder!]),
+      underlying.read.balanceOf([walletClient.account!.address]),
+      superToken.read.balanceOf([walletClient.account!.address]),
     ]);
     const u2 = u2Raw as unknown as bigint;
     const s2 = s2Raw as unknown as bigint;

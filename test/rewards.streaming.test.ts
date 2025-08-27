@@ -55,10 +55,8 @@ async function isValidWrapper(addr: `0x${string}`): Promise<boolean> {
   } catch { return false; }
 }
 
-describe("RewardsManager streaming with live Superfluid (mocked SendEarn)", function () {
-  it("creates a flow into the RewardsManager pool and reflects units from mocked vault (env-gated)", async function () {
-    if (process.env.RUN_STREAMING_TEST !== "true") this.skip();
-
+describe("RewardsManager streaming with live Superfluid (no env)", function () {
+  it("creates a flow into the RewardsManager pool and reflects units from mocked vault", async function () {
     const publicClient = await hre.viem.getPublicClient();
     const [walletClient] = await hre.viem.getWalletClients();
     if (!walletClient) this.skip();
@@ -66,18 +64,7 @@ describe("RewardsManager streaming with live Superfluid (mocked SendEarn)", func
     const chainId = await publicClient.getChainId();
     const cfg = getConfig(chainId);
 
-    // Resolve SENDx wrapper
-    const wrapper = await getWrapperAddress();
-    if (!wrapper || !(await isValidWrapper(wrapper))) this.skip();
-
-    // Impersonate a holder to fund the stream
-    const holder = process.env.SEND_HOLDER as `0x${string}` | undefined;
-    if (!holder) this.skip();
-
-    await impersonateAccount(holder);
-    await setBalance(holder, 10n * 10n ** 18n);
-
-    // Load ABIs we need
+    // Deploy a mock underlying, create a wrapper, and upgrade from our own account
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const ISuperTokenJson = await import("@superfluid-finance/ethereum-contracts/build/truffle/ISuperToken.json");
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -86,17 +73,37 @@ describe("RewardsManager streaming with live Superfluid (mocked SendEarn)", func
     const ISuperfluidJson = await import("@superfluid-finance/ethereum-contracts/build/truffle/ISuperfluid.json");
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const IConstantFlowAgreementV1Json = await import("@superfluid-finance/ethereum-contracts/build/truffle/IConstantFlowAgreementV1.json");
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const SuperTokenFactoryJson = await import("@superfluid-finance/ethereum-contracts/build/truffle/SuperTokenFactory.json");
+
+    // Mock underlying ERC20 (18 decimals for simplicity)
+    const artifactsRoot = path.resolve(__dirname, "..", "artifacts", "contracts");
+    const mockErc20Artifact = await readJson(path.resolve(artifactsRoot, "mocks", "MockERC20.sol", "MockERC20.json"));
+    if (!mockErc20Artifact?.abi) this.skip();
+    const erc20Abi = mockErc20Artifact.abi as any[];
+    const erc20Bytecode = (mockErc20Artifact.bytecode?.object ?? mockErc20Artifact.bytecode) as `0x${string}`;
+    const hashUnderlying = await walletClient.deployContract({ abi: erc20Abi, bytecode: erc20Bytecode, args: ["MOCK", "MOCK", 18], account: walletClient.account! });
+    const receiptUnderlying = await publicClient.waitForTransactionReceipt({ hash: hashUnderlying });
+    const underlyingAddr = receiptUnderlying.contractAddress as `0x${string}`;
+
+    // Create wrapper via SuperTokenFactory
+    const factory = getContract({ address: cfg.superTokenFactory, abi: (SuperTokenFactoryJson as any).default.abi as any[], client: { public: publicClient, wallet: walletClient } });
+    const { request: createReq, result: wrapperRes } = await factory.simulate.createERC20Wrapper([underlyingAddr, 18, 1, cfg.wrapperName, cfg.wrapperSymbol], { account: walletClient.account! });
+    const createHash = await walletClient.writeContract(createReq);
+    await publicClient.waitForTransactionReceipt({ hash: createHash });
+    const wrapper = wrapperRes as unknown as `0x${string}`;
 
     const superToken = getContract({ address: wrapper, abi: (ISuperTokenJson as any).default.abi as any[], client: { public: publicClient, wallet: walletClient } });
-    const underlying = getContract({ address: cfg.sendV1, abi: (IERC20Json as any).default.abi as any[], client: { public: publicClient, wallet: walletClient } });
+    const underlying = getContract({ address: underlyingAddr, abi: (IERC20Json as any).default.abi as any[], client: { public: publicClient, wallet: walletClient } });
 
-    // Upgrade some underlying to SENDx for streaming
-    const amount = 10n ** 18n; // 1.0 SEND
-    const uBal = (await underlying.read.balanceOf([holder])) as unknown as bigint;
-    if (uBal < amount) this.skip();
+    const amount = 10n ** 18n; // 1 token
+    // Mint by directly calling MockERC20.mint (available in our mock)
+    const mockMintAbi = [{ type: "function", name: "mint", stateMutability: "nonpayable", inputs: [{ name: "to", type: "address" }, { name: "amount", type: "uint256" }], outputs: [] }] as const;
+    const minter = getContract({ address: underlyingAddr, abi: mockMintAbi as any, client: { public: publicClient, wallet: walletClient } });
+    await minter.write.mint([walletClient.account!.address, amount]);
 
-    await underlying.write.approve([wrapper, amount], { account: holder });
-    await superToken.write.upgrade([amount], { account: holder });
+    await underlying.write.approve([wrapper, amount], { account: walletClient.account! });
+    await superToken.write.upgrade([amount], { account: walletClient.account! });
 
     // Deploy mocks for SendEarnFactory, USDC, and vault
     const artifactsRoot = path.resolve(__dirname, "..", "artifacts", "contracts");

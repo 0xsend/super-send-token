@@ -3,61 +3,20 @@ import hre from "hardhat";
 import { getConfig } from "../config/superfluid";
 import fs from "fs/promises";
 import path from "node:path";
-import { getContract, zeroAddress } from "viem";
+import { getContract } from "viem";
 
 async function readJson(file: string): Promise<any | null> {
   try { return JSON.parse(await fs.readFile(file, "utf8")); } catch { return null; }
 }
 
-async function getWrapperAddress(): Promise<`0x${string}` | null> {
-  const publicClient = await hre.viem.getPublicClient();
-  const [walletClient] = await hre.viem.getWalletClients();
-  if (!walletClient) throw new Error("Wallet client not configured");
-
-  const chainId = await publicClient.getChainId();
-  const cfg = getConfig(chainId);
-
-  // Try deployments cache
-  try {
-    const deployments = await hre.run("read-file", { path: `deployments/wrapper.${chainId}.json` }).catch(() => null as any);
-    if (deployments) {
-      const parsed = JSON.parse(deployments);
-      if (parsed?.address && parsed.address !== "") return parsed.address;
-    }
-  } catch {}
-
-  // Try canonical mapping
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const SuperTokenFactoryJson = await import("@superfluid-finance/ethereum-contracts/build/truffle/SuperTokenFactory.json");
-  const factory = getContract({ address: cfg.superTokenFactory, abi: (SuperTokenFactoryJson as any).default.abi as any[], client: { public: publicClient } });
-  try {
-    const canonical = (await factory.read.getCanonicalERC20Wrapper([cfg.sendV1])) as unknown as `0x${string}`;
-    if (canonical && canonical !== zeroAddress) return canonical;
-  } catch {}
-
-  if (process.env.CREATE_WRAPPER === "true") {
-    const factoryW = getContract({ address: cfg.superTokenFactory, abi: (SuperTokenFactoryJson as any).default.abi as any[], client: { public: publicClient, wallet: walletClient } });
-    const upgradability = 1; // SEMI_UPGRADABLE
-    const { request, result } = await factoryW.simulate.createERC20Wrapper([cfg.sendV1, cfg.underlyingDecimals, upgradability, cfg.wrapperName, cfg.wrapperSymbol], { account: walletClient.account! });
-    const hash = await walletClient.writeContract(request);
-    await publicClient.waitForTransactionReceipt({ hash });
-    return result as unknown as `0x${string}`;
-  }
-
-  return null;
-}
-
-describe("RewardsManager vault normalization & validation (mocked factory)", function () {
-  it("reverts for invalid vault, normalizes affiliate, and rejects asset mismatch (env-gated)", async function () {
+describe("RewardsManager vault normalization & validation (no env)", function () {
+  it("reverts for invalid vault, normalizes affiliate, and rejects asset mismatch", async function () {
     const publicClient = await hre.viem.getPublicClient();
     const [walletClient] = await hre.viem.getWalletClients();
     if (!walletClient) this.skip();
 
     const chainId = await publicClient.getChainId();
     const cfg = getConfig(chainId);
-
-    const sendx = await getWrapperAddress();
-    if (!sendx) this.skip();
 
     // Load artifacts
     const artifactsRoot = path.resolve(__dirname, "..", "artifacts", "contracts");
@@ -82,16 +41,30 @@ describe("RewardsManager vault normalization & validation (mocked factory)", fun
     const usdc = receiptUSDC.contractAddress as `0x${string}` | null;
     if (!usdc) this.skip();
 
-    // 2) Deploy mock SendEarnFactory
+    // 2) Create a SuperToken wrapper for the mock USDC via SuperTokenFactory
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const SuperTokenFactoryJson = await import("@superfluid-finance/ethereum-contracts/build/truffle/SuperTokenFactory.json");
+    const factory = getContract({ address: cfg.superTokenFactory, abi: (SuperTokenFactoryJson as any).default.abi as any[], client: { public: publicClient, wallet: walletClient } });
+    const upgradability = 1; // SEMI_UPGRADABLE
+    // Read decimals via public variable getter
+    const erc20MetaAbi = [ { type: "function", name: "decimals", stateMutability: "view", inputs: [], outputs: [{ type: "uint8" }] } ] as const;
+    const meta = getContract({ address: usdc!, abi: erc20MetaAbi as any, client: { public: publicClient } });
+    const dec = Number(await meta.read.decimals([]));
+    const { request: createReq, result: createdWrapper } = await factory.simulate.createERC20Wrapper([usdc!, dec, upgradability, cfg.wrapperName, cfg.wrapperSymbol], { account: walletClient.account! });
+    const createHash = await walletClient.writeContract(createReq);
+    await publicClient.waitForTransactionReceipt({ hash: createHash });
+    const sendx = createdWrapper as unknown as `0x${string}`;
+
+    // 3) Deploy mock SendEarnFactory
     const mockFactoryAbi = mockFactoryArtifact.abi as any[];
     const mockFactoryBytecode = (mockFactoryArtifact.bytecode?.object ?? mockFactoryArtifact.bytecode) as `0x${string}`;
     const hashF = await walletClient.deployContract({ abi: mockFactoryAbi, bytecode: mockFactoryBytecode, args: [], account: walletClient.account! });
     const receiptF = await publicClient.waitForTransactionReceipt({ hash: hashF });
-    const factory = receiptF.contractAddress as `0x${string}` | null;
-    if (!factory) this.skip();
-    const factoryC = getContract({ address: factory!, abi: mockFactoryAbi, client: { public: publicClient, wallet: walletClient } });
+    const factoryAddr = receiptF.contractAddress as `0x${string}` | null;
+    if (!factoryAddr) this.skip();
+    const factoryC = getContract({ address: factoryAddr!, abi: mockFactoryAbi, client: { public: publicClient, wallet: walletClient } });
 
-    // 3) Deploy a valid mock vault (1:1 shares->assets)
+    // 4) Deploy a valid mock vault (1:1 shares->assets)
     const mockVaultAbi = mockVaultArtifact.abi as any[];
     const mockVaultBytecode = (mockVaultArtifact.bytecode?.object ?? mockVaultArtifact.bytecode) as `0x${string}`;
     const hashV = await walletClient.deployContract({ abi: mockVaultAbi, bytecode: mockVaultBytecode, args: [usdc!, "vUSDC", "vUSDC", 1, 1], account: walletClient.account! });
@@ -100,7 +73,7 @@ describe("RewardsManager vault normalization & validation (mocked factory)", fun
     if (!validVault) this.skip();
     const vaultC = getContract({ address: validVault!, abi: mockVaultAbi, client: { public: publicClient, wallet: walletClient } });
 
-    // 4) Deploy a mismatched vault (wrong asset)
+    // 5) Deploy a mismatched vault (wrong asset)
     const hashOther = await walletClient.deployContract({ abi: mockErc20Abi, bytecode: mockErc20Bytecode, args: ["DAI", "DAI", 18], account: walletClient.account! });
     const receiptOther = await publicClient.waitForTransactionReceipt({ hash: hashOther });
     const dai = receiptOther.contractAddress as `0x${string}` | null;
@@ -111,7 +84,7 @@ describe("RewardsManager vault normalization & validation (mocked factory)", fun
     const mismatchVault = receiptVM.contractAddress as `0x${string}` | null;
     if (!mismatchVault) this.skip();
 
-    // 5) Configure factory: mark validVault as SendEarn; set affiliate mapping
+    // 6) Configure factory: mark validVault as SendEarn; set affiliate mapping
     const { request: setSE } = await factoryC.simulate.setIsSendEarn([validVault!, true], { account: walletClient.account! });
     await walletClient.writeContract(setSE);
 
@@ -119,13 +92,13 @@ describe("RewardsManager vault normalization & validation (mocked factory)", fun
     const { request: setAff } = await factoryC.simulate.setAffiliate([affiliate, validVault!], { account: walletClient.account! });
     await walletClient.writeContract(setAff);
 
-    // 6) Deploy RewardsManager (minAssets = 1)
+    // 7) Deploy RewardsManager (minAssets = 1)
     const rmAbi = rmArtifact.abi as any[];
     const rmBytecode = (rmArtifact.bytecode?.object ?? rmArtifact.bytecode) as `0x${string}`;
     const hashRM = await walletClient.deployContract({
       abi: rmAbi,
       bytecode: rmBytecode,
-      args: [sendx!, factory!, usdc!, walletClient.account!.address, 1n],
+      args: [sendx!, factoryAddr!, usdc!, walletClient.account!.address, 1n],
       account: walletClient.account!,
     });
     const receiptRM = await publicClient.waitForTransactionReceipt({ hash: hashRM });

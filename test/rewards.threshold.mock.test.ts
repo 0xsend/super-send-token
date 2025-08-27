@@ -2,53 +2,15 @@ import { expect } from "chai";
 import hre from "hardhat";
 import fs from "fs/promises";
 import path from "node:path";
-import { getContract, zeroAddress } from "viem";
+import { getContract } from "viem";
 import { getConfig } from "../config/superfluid";
 
 async function readJson(file: string): Promise<any | null> {
   try { return JSON.parse(await fs.readFile(file, "utf8")); } catch { return null; }
 }
 
-async function getWrapperAddress(): Promise<`0x${string}` | null> {
-  const publicClient = await hre.viem.getPublicClient();
-  const [walletClient] = await hre.viem.getWalletClients();
-  if (!walletClient) throw new Error("Wallet client not configured");
-
-  const chainId = await publicClient.getChainId();
-  const cfg = getConfig(chainId);
-
-  // Try deployments cache
-  try {
-    const deployments = await hre.run("read-file", { path: `deployments/wrapper.${chainId}.json` }).catch(() => null as any);
-    if (deployments) {
-      const parsed = JSON.parse(deployments);
-      if (parsed?.address && parsed.address !== "") return parsed.address;
-    }
-  } catch {}
-
-  // Try canonical mapping
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const SuperTokenFactoryJson = await import("@superfluid-finance/ethereum-contracts/build/truffle/SuperTokenFactory.json");
-  const factory = getContract({ address: cfg.superTokenFactory, abi: (SuperTokenFactoryJson as any).default.abi as any[], client: { public: publicClient } });
-  try {
-    const canonical = (await factory.read.getCanonicalERC20Wrapper([cfg.sendV1])) as unknown as `0x${string}`;
-    if (canonical && canonical !== zeroAddress) return canonical;
-  } catch {}
-
-  if (process.env.CREATE_WRAPPER === "true") {
-    const factoryW = getContract({ address: cfg.superTokenFactory, abi: (SuperTokenFactoryJson as any).default.abi as any[], client: { public: publicClient, wallet: walletClient } });
-    const upgradability = 1; // SEMI_UPGRADABLE
-    const { request, result } = await factoryW.simulate.createERC20Wrapper([cfg.sendV1, cfg.underlyingDecimals, upgradability, cfg.wrapperName, cfg.wrapperSymbol], { account: walletClient.account! });
-    const hash = await walletClient.writeContract(request);
-    await publicClient.waitForTransactionReceipt({ hash });
-    return result as unknown as `0x${string}`;
-  }
-
-  return null;
-}
-
-describe("RewardsManager threshold tracking with live Superfluid (mocked SendEarn)", function () {
-  it("tracks users above minAssets and updates pool units (env-gated)", async function () {
+describe("RewardsManager threshold tracking (no env)", function () {
+  it("tracks users above minAssets and updates pool units", async function () {
     const publicClient = await hre.viem.getPublicClient();
     const [walletClient] = await hre.viem.getWalletClients();
     if (!walletClient) this.skip();
@@ -64,16 +26,24 @@ describe("RewardsManager threshold tracking with live Superfluid (mocked SendEar
     const mockFactory = await readJson(path.resolve(root, "mocks", "MockSendEarnFactory.sol", "MockSendEarnFactory.json"));
     if (!rm?.abi || !mockERC20?.abi || !mockVault?.abi || !mockFactory?.abi) this.skip();
 
-    // Resolve SENDx
-    const sendx = await getWrapperAddress();
-    if (!sendx) this.skip();
-
     // Deploy mock USDC
     const erc20Abi = mockERC20.abi as any[];
     const erc20Bytecode = (mockERC20.bytecode?.object ?? mockERC20.bytecode) as `0x${string}`;
     const hashUSDC = await walletClient.deployContract({ abi: erc20Abi, bytecode: erc20Bytecode, args: ["USDC", "USDC", 6], account: walletClient.account! });
     const usdcReceipt = await publicClient.waitForTransactionReceipt({ hash: hashUSDC });
     const usdc = usdcReceipt.contractAddress as `0x${string}`;
+
+    // Create wrapper for mock USDC
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const SuperTokenFactoryJson = await import("@superfluid-finance/ethereum-contracts/build/truffle/SuperTokenFactory.json");
+    const factorySF = getContract({ address: cfg.superTokenFactory, abi: (SuperTokenFactoryJson as any).default.abi as any[], client: { public: publicClient, wallet: walletClient } });
+    const metaAbi = [ { type: "function", name: "decimals", stateMutability: "view", inputs: [], outputs: [{ type: "uint8" }] } ] as const;
+    const meta = getContract({ address: usdc, abi: metaAbi as any, client: { public: publicClient } });
+    const dec = Number(await meta.read.decimals([]));
+    const { request: createReq, result: sendxRes } = await factorySF.simulate.createERC20Wrapper([usdc, dec, 1, cfg.wrapperName, cfg.wrapperSymbol], { account: walletClient.account! });
+    const txCreate = await walletClient.writeContract(createReq);
+    await publicClient.waitForTransactionReceipt({ hash: txCreate });
+    const sendx = sendxRes as unknown as `0x${string}`;
 
     // Deploy factory and vault; mark vault as SendEarn
     const factoryAbi = mockFactory.abi as any[];
