@@ -73,14 +73,18 @@ Test plan:
 
 Commit: 86acc12
 
-## 472d60d Accept existing SuperToken in RewardsManager ctor
+## 472d60d Require existing SENDx in RewardsManager constructor
 Why:
-Remove wrapper creation from constructor; require SENDx to be
-provided to simplify lifecycle.
+Decouple wrapper creation from rewards by requiring an existing
+ISuperToken (SENDx) to be passed into the RewardsManager
+constructor. This simplifies lifecycle, avoids implicit wrapper
+creation, and clarifies responsibilities between features.
 
 Test plan:
-- Compile and run rewards manager tests.
-- Confirm no wrapper creation occurs in ctor.
+- bunx hardhat compile
+- bunx hardhat test test/rewards.manager.test.ts
+- bunx hardhat run scripts/rewards/deploy.ts --network anvil
+  (SENDx resolved; pool is created; deployments updated)
 
 Commit: 472d60d
 
