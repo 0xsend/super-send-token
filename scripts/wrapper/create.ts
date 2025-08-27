@@ -10,8 +10,8 @@ import { getContract } from "viem";
 
 // Import ABIs from the official Superfluid package (installed as a dev dependency).
 // We use the truffle JSON artifacts for ABIs only.
-import SuperTokenFactoryJson from "@superfluid-finance/ethereum-contracts/build/truffle/SuperTokenFactory.json" assert { type: "json" };
-import ISuperTokenJson from "@superfluid-finance/ethereum-contracts/build/truffle/ISuperToken.json" assert { type: "json" };
+import SuperTokenFactoryJson from "@superfluid-finance/ethereum-contracts/build/truffle/SuperTokenFactory.json";
+import ISuperTokenJson from "@superfluid-finance/ethereum-contracts/build/truffle/ISuperToken.json";
 
 async function readJson(file: string): Promise<any | null> {
   try { return JSON.parse(await fs.readFile(file, "utf8")); } catch { return null; }
@@ -31,6 +31,10 @@ async function main() {
   const chainId = await publicClient.getChainId();
   const cfg = getConfig(chainId);
 
+  // Allow overriding the underlying token for dev workflows (e.g., WETH on a fork)
+  const underlyingOverride = process.env.UNDERLYING_ADDRESS as `0x${string}` | undefined;
+  const underlying = (underlyingOverride && underlyingOverride.startsWith("0x")) ? underlyingOverride : (cfg.sendV1 as `0x${string}`);
+
   const deploymentsPath = path.resolve(__dirname, "..", "..", "deployments", `wrapper.${chainId}.json`);
   const existing = await readJson(deploymentsPath);
 
@@ -45,8 +49,8 @@ async function main() {
       const code = await publicClient.getBytecode({ address: addr });
       if (!code) return false;
       const superToken = getContract({ address: addr, abi: superTokenAbi, client: { public: publicClient } });
-      const underlying = await superToken.read.getUnderlyingToken();
-      return underlying.toLowerCase() === cfg.sendV1.toLowerCase();
+      const u = (await superToken.read.getUnderlyingToken([])) as unknown as `0x${string}`;
+      return u.toLowerCase() === underlying.toLowerCase();
     } catch {
       return false;
     }
@@ -65,11 +69,11 @@ async function main() {
   // 2) Try canonical mapping in the factory
   const factory = getContract({ address: cfg.superTokenFactory, abi: factoryAbi, client: { public: publicClient, wallet: walletClient } });
   try {
-    const canonical = await factory.read.getCanonicalERC20Wrapper([cfg.sendV1]);
+    const canonical = (await factory.read.getCanonicalERC20Wrapper([underlying])) as unknown as `0x${string}`;
     if (canonical && canonical !== "0x0000000000000000000000000000000000000000" && await isValidWrapper(canonical)) {
       log("Found canonical wrapper:", canonical);
       const block = await publicClient.getBlockNumber();
-      await writeJson(deploymentsPath, { address: canonical, underlying: cfg.sendV1, createdAt: Number(block), chainId, factory: cfg.superTokenFactory });
+      await writeJson(deploymentsPath, { address: canonical, underlying, createdAt: Number(block), chainId, factory: cfg.superTokenFactory });
       console.log(canonical);
       return;
     }
@@ -87,24 +91,24 @@ async function main() {
   // Upgradability: 1 = SEMI_UPGRADABLE (per SuperTokenFactory.Upgradability enum)
   const upgradability = 1;
   const { request, result: createdAddress } = await factory.simulate.createERC20Wrapper([
-    cfg.sendV1,
+    underlying,
     cfg.underlyingDecimals,
     upgradability,
     cfg.wrapperName,
     cfg.wrapperSymbol,
-  ], { account });
+  ], { account: account as any });
 
   const hash = await walletClient.writeContract(request);
   const receipt = await publicClient.waitForTransactionReceipt({ hash });
   log("createERC20Wrapper tx mined:", receipt.transactionHash);
 
-  const wrapperAddress = createdAddress as `0x${string}`;
+  const wrapperAddress = createdAddress as unknown as `0x${string}`;
   if (!await isValidWrapper(wrapperAddress)) {
     throw new Error(`Wrapper created but validation failed: ${wrapperAddress}`);
   }
 
   const block = await publicClient.getBlockNumber();
-  await writeJson(deploymentsPath, { address: wrapperAddress, underlying: cfg.sendV1, createdAt: Number(block), chainId, factory: cfg.superTokenFactory });
+  await writeJson(deploymentsPath, { address: wrapperAddress, underlying, createdAt: Number(block), chainId, factory: cfg.superTokenFactory });
   log("Wrapper created:", wrapperAddress);
   console.log(wrapperAddress);
 }
