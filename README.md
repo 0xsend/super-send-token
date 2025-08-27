@@ -20,6 +20,12 @@ Scripts and flows
   ```sh
   bun run test
   ```
+- Multi-vault aggregation (optional): set VAULT_ADDRESSES as a comma-separated list and (optionally) VAULT_HOLDERS as a comma-separated list (defaults to SHARE_HOLDER for all). (SHARE_TOKEN_ADDRESSES is accepted for backward compatibility.)
+    ```sh
+    SHARE_TOKEN_ADDRESSES=0xVault1,0xVault2 \
+    VAULT_HOLDERS=0xHolder1,0xHolder2 \
+    bunx hardhat test --network anvil
+    ```
 - Local wrapper discovery/creation (PR4):
   - Discover existing wrapper or create if not present (set CREATE_WRAPPER=true):
     ```sh
@@ -29,10 +35,29 @@ Scripts and flows
     ```sh
     bunx hardhat run scripts/wrapper/create.ts --network base
     ```
+- Deploy RewardsManager with Hardhat Ignition (consolidated manager):
+- Prepare parameters by filling ignition/parameters/RewardsManager.sample.json and saving as, for example, ignition/parameters/RewardsManager.base.json
+- Values required: sendx (pre-existing SuperToken wrapper), sendEarnFactory, asset (USDC), admin (DEFAULT_ADMIN_ROLE holder), minAssets. The contract creates the Superfluid pool in its constructor; it no longer creates the SuperToken wrapper.
+  - Deploy:
+    ```sh
+bunx hardhat ignition deploy ./ignition/modules/RewardsManager.ts \
+      --network base \
+      --parameters ignition/parameters/RewardsManager.base.json
+    ```
+  - Example module structure mirrors: /Users/vict0xr/Documents/Send/send-token-upgrade/ignition/modules/SendToken.ts
+  - See Ignition docs for parameters JSON: https://hardhat.org/hardhat-runner/plugins/nomicfoundation-hardhat-ignition
 - Local deploy orchestration (anvil state helper):
   ```sh
   ./bin/anvil-deploy
   ```
+- Fund a holder with vault shares locally (to exercise syncVault in tests):
+  ```sh
+  VAULT_ADDRESS=0xVault \
+  SHARE_HOLDER=0xHolder \
+  AMOUNT_ASSETS=1000000 \
+  bunx hardhat run scripts/rewards/fundHolder.ts --network anvil
+  ```
+  (SHARE_TOKEN_ADDRESS is accepted for backward compatibility.)
 - Wrapper address persistence
   - deployments/wrapper.{chainId}.json
 
@@ -46,3 +71,4 @@ References (Rule 3: mirror official examples; no custom Solidity)
 - ISuperToken: https://github.com/superfluid-finance/protocol-monorepo/blob/dev/packages/ethereum-contracts/contracts/interfaces/superfluid/ISuperToken.sol
 - CFAv1: https://docs.superfluid.finance/superfluid/developers/constant-flow-agreement-cfa
 - Hardhat + Viem: https://github.com/NomicFoundation/hardhat-viem
+- Hardhat Ignition: https://hardhat.org/hardhat-runner/plugins/nomicfoundation-hardhat-ignition
