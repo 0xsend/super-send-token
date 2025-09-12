@@ -94,7 +94,7 @@ Then test against the anvil network:
 
 ## Commit history (base → top)
 
-## 2ce849f Initialize README for SuperToken wrapper
+## Initialize README for SuperToken wrapper
 
 Why:
 Introduce initial README to describe the SuperToken wrapper
@@ -103,9 +103,8 @@ and repository scope so contributors have context.
 Test plan:
 - Open README.md and verify content renders.
 
-Commit: 2ce849f
 
-## af49ed5 Scaffold project from send-token-upgrade
+## Scaffold project from send-token-upgrade
 
 Why:
 Bootstrap repository structure using the known baseline to
@@ -115,9 +114,8 @@ Test plan:
 - List files; key scaffolding files exist.
 - bunx hardhat compile succeeds.
 
-Commit: af49ed5
 
-## 2334262 Rename package name
+## Rename package name
 
 Why:
 Ensure the package name matches the repository purpose and
@@ -127,9 +125,8 @@ Test plan:
 - Inspect package.json name field.
 - bun install completes without warnings.
 
-Commit: 2334262
 
-## 8f87619 Remove legacy lockbox code; rename Tilt resource
+## Remove legacy lockbox code; rename Tilt resource
 
 Why:
 Drop vestigial lockbox/v1 contracts not used here and keep
@@ -139,9 +136,8 @@ Test plan:
 - Confirm removed contracts no longer exist.
 - Tilt runs with updated resource names.
 
-Commit: 8f87619
 
-## 4440c4a Bootstrap Superfluid config and deployments
+## Bootstrap Superfluid config and deployments
 
 Why:
 Establish the network configuration and deterministic deploy
@@ -162,9 +158,8 @@ Test plan:
 - bunx hardhat run scripts/wrapper/create.ts --network base|sepolia
   (read-only discovery path)
 
-Commit: 4440c4a
 
-## 0d00a52 Add Superfluid ABIs helper
+## Add Superfluid ABIs helper
 
 Why:
 Centralize ABI references used by scripts to avoid drift and
@@ -174,9 +169,8 @@ Test plan:
 - Inspect scripts/abis/superfluid.ts.
 - Run wrapper/rewards scripts without ABI errors.
 
-Commit: 0d00a52
 
-## 9f22c5a Add CFAv1Forwarder field (optional)
+## Add CFAv1Forwarder field (optional)
 
 Why:
 Expose forwarder address for optional streaming helpers and
@@ -185,9 +179,8 @@ integration tests.
 Test plan:
 - Inspect config/superfluid.ts includes forwarder.
 
-Commit: 9f22c5a
 
-## 3e706dd Add test/type dependencies and refresh bun.lock
+## Add test/type dependencies and refresh bun.lock
 
 Why:
 Provide required types and keep lockfile up to date to avoid
@@ -197,9 +190,8 @@ Test plan:
 - bun install succeeds.
 - Type checks pass.
 
-Commit: 3e706dd
 
-## f98498d Ensure hardfork=cancun on hardhat network
+## Ensure hardfork=cancun on hardhat network
 
 Why:
 Avoid mismatches in EVM behavior across local networks.
@@ -208,9 +200,8 @@ Test plan:
 - Inspect hardhat.config.ts for hardfork=cancun.
 - bunx hardhat compile works.
 
-Commit: f98498d
 
-## f81d703 Align viem calls and env discovery in tests
+## Align viem calls and env discovery in tests
 
 Why:
 Reduce flakiness and ensure tests resolve env/config in a
@@ -220,9 +211,8 @@ Test plan:
 - bunx hardhat test test/rewards.manager.test.ts
 - bunx hardhat test test/wrapper.ts
 
-Commit: f81d703
 
-## bfc0b68 Add SuperTokenV1Library notes and update docs
+## Add SuperTokenV1Library notes and update docs
 
 Why:
 Record library usage patterns and refine project planning
@@ -231,9 +221,8 @@ documents for clarity.
 Test plan:
 - Open SuperTokenV1Library.md and PLAN.md.
 
-Commit: bfc0b68
 
-## 0bd7274 Split docs into feature docs; remove stack-plan
+## Split docs into feature docs; remove stack-plan
 
 Why:
 Move documentation from docs/stack-plan.md into per-feature docs to
@@ -246,5 +235,4 @@ Test plan:
 - Confirm docs/stack-plan.md has been removed and README links to feature
   docs.
 
-Commit: 0bd7274
 
