@@ -20,28 +20,31 @@ Status: Proposal (docs-only PR)
 - Wrapper-vault: this new ERC4626 contract; holds target vault shares, issues its own shares to users.
 - Units: Superfluid pool member units; assets-normalized measure used to split distributions.
 
-## 4) High-level design
-- The wrapper’s asset = the underlying ERC20 of the target vault.
-- Deposits: users supply underlying to wrapper; wrapper deposits into target vault (to self), then mints wrapper shares to users.
-- Withdrawals: wrapper burns wrapper shares and withdraws/redeems from target vault to pull underlying; sends underlying to receiver.
-- Units = wrapper.convertToAssets(balanceOf(user)) (cast to uint128). Units are set/updated when balances change.
+## 4) High-level design (V1: assets-normalized per user, aggregated)
+- Aggregated across SendEarn vaults that share the same underlying asset (uniform asset invariant).
+- The contract accepts deposits targeted to a specific SendEarn vault (validated) and holds the resulting vault shares; positions are non-transferable (no P2P share transfers).
+- Withdrawals mirror back from the specified vault.
+- Units (per user) = sum over all tracked SendEarn vaults of convertToAssets(userSharesInVault), cast to uint128.
 - Pool config: non-transferable units; distributionFromAnyAddress configurable (default true for dev convenience).
 
 ## 5) Invariants
-- totalAssets() returns the underlying-equivalent held via the target vault: totalAssets = targetVault.convertToAssets(targetShareBalanceOf(wrapper)).
-- For each user u: units(u) = floor(convertToAssets(wrapperShares(u))).
-- On deposit/mint/withdraw/redeem/transfer, units are updated for affected accounts (sender/recipient).
-- No direct user custody of target shares: wrapper is sole owner of target vault shares corresponding to wrapper supply.
+- Uniform asset: All accepted SendEarn vaults MUST have IERC4626(v).asset() == address(asset).
+- Vault allowlist: Only vaults created by SendEarnFactory are accepted (factory.isSendEarn(v) == true).
+- totalAssets (global): Sum of underlying-equivalent held across all accepted SendEarn vaults by this contract.
+- For each user u: units(u) = Σ_v floor(convertToAssets(userSharesInVault[v])).
+- Units update on deposit/withdraw for the specific vault; positions are non-transferable to simplify updates.
+- No direct user custody of target shares: the contract holds SendEarn shares corresponding to ledgered user balances.
 
-## 6) ERC4626 integration points
-- afterDeposit(assets, shares): approve target vault and deposit assets to the target for the wrapper; record no extra state beyond balances; update units for the receiver.
-- beforeWithdraw(assets, shares): redeem/withdraw from the target vault sufficient underlying for the wrapper to fulfill the withdrawal; update units for the owner.
-- _afterTokenTransfer(from, to, amount): on wrapper share transfers, recompute and update units for from and to (connect/disconnect to pool if needed).
+## 6) Integration points (non-transferable positions)
+- depositAssets(vault, assets): validate isSendEarn(vault) and asset match; transfer underlying from user; approve+deposit into vault to this contract; credit user’s per-vault shares; update units for user by adding convertToAssets(sharesMinted).
+- withdrawAssets(vault, assets): validate vault; compute shares via previewWithdraw; debit user’s per-vault shares; withdraw to user; update units by subtracting convertToAssets(sharesBurned).
+- No peer-to-peer transfer path: positions are not transferable to avoid extra unit update hooks.
 
 ## 7) Superfluid pool wiring
+- Single aggregated pool across all accepted SendEarn vaults.
 - Create the pool in the constructor with PoolConfig{ transferabilityForUnitsOwner: false, distributionFromAnyAddress: true }.
-- The wrapper is the pool admin (only the wrapper updates member units).
-- Member lifecycle: connect on first positive units; disconnect optional. Units govern the share regardless of connection status; consider connecting lazily and relying on claimAll.
+- The contract is the pool admin (only it updates member units).
+- Member lifecycle: connect on first positive units; do not disconnect (optional). Units govern the share regardless of connection status; claimAll works for late connections.
 
 ## 8) Public methods (external surface)
 - deposit(uint256 assets, address receiver)
@@ -52,25 +55,27 @@ Status: Proposal (docs-only PR)
 - Pool views: pool(), unitsOf(address)
 
 ## 9) Units update strategy
-- On mint/deposit: compute new units = convertToAssets(balanceOf(receiver)) and pool.updateMemberUnits(receiver, uint128(newUnits)).
-- On burn/withdraw: same for owner.
-- On transfer: recompute for from and to. If balance is zero, units become zero.
-- Casting and rounding: floor on convert/preview; cast to uint128; add guardrails against overflow (practical ranges only).
+- On depositAssets: add convertToAssets(sharesMinted) to the user’s aggregated assets and updateMemberUnits(user, floor(sumAssets)).
+- On withdrawAssets: subtract convertToAssets(sharesBurned) and update units accordingly (floor).
+- No transfer path to handle.
+- Casting and rounding: use ERC4626 preview/convert and floor; cast to uint128; add guardrails against overflow (practical ranges only).
 
 ## 10) Multi-vault aggregation (optional)
 - Preferred for clarity: one wrapper and pool per target vault.
 - If aggregation is desired: maintain a set of target vaults; store per-vault positions; units = sum(convertToAssets_per_vault(balance_per_vault)). This adds complexity and must respect gas limits.
 
-## 11) Distribution policy
-- Continuous: superToken.distributeFlow(pool, flowRate), where flowRatePerUnit = floor(totalFlowRate / totalUnits). Design flows to avoid flowRatePerUnit=0.
-- Periodic: superToken.distribute(pool, amount) and/or claimAll; remainders from integer division accumulate until claim.
-- Reconcile-before-distribute (optional guard): ensure latest balances are reflected by updating units for addresses with recent balance changes.
+## 11) Distribution policy (ensure flowRate is large enough)
+- Continuous (preferred): superToken.distributeFlow(pool, flowRate), with flowRate sized from the 3% annual budget converted to SENDx via oracle.
+  - Guard: only start/continue flow while floor(flowRate / totalUnits) >= 1 wei/sec per unit. If not, pause/switch to periodic until the budget or TVL makes it viable.
+- Periodic (fallback): superToken.distribute(pool, amount) and/or claimAll; compute amount for the period from the 3% annual budget in SENDx.
+- Oracle-driven budget: total3PercentPerYearInSENDx = oracle(asset→SENDx, Σ_v convertToAssets(contractSharesInVault[v])) × 0.03.
 
-## 12) Security considerations
+## 12) Security and validation
+- Vault validation: require SendEarnFactory.isSendEarn(vault) and IERC4626(vault).asset() == asset.
 - Reentrancy: guard deposit/withdraw paths and pool updates; use checks-effects-interactions.
 - Approvals: use safe approve patterns (forceApprove) to the target vault.
 - Slippage: respect preview* and max*; handle zero/edge amounts; ensure sufficient liquidity for withdraw.
-- Access control: only wrapper updates units; no user ability to update units directly.
+- Access control: only the aggregator updates units; no user ability to update units directly.
 
 ## 13) Gas and rounding
 - Unit updates are O(1) per affected account; no loops over all members.
