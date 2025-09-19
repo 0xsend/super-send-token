@@ -18,7 +18,6 @@
   - ./bin/anvil-deploy (expects Anvil at 127.0.0.1:8546; funds
     EOA_DEPLOYER, toggles automine/interval, runs wrapper creation)
 
-## Commit history (base → top)
 
 ## c9ac731 Add SuperToken wrapper plan
 Why:
@@ -99,5 +98,4 @@ Test plan:
 - Confirm docs/stack-plan.md has been removed and README links to feature
   docs.
 
-Commit: 0bd7274
 
