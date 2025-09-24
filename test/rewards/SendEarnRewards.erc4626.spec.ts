@@ -188,8 +188,6 @@ describe("SendEarnRewards v2 (ERC4626 only; streaming deferred)", () => {
     const recordedShares = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "userUnderlyingShares", args: [a, vaultA.address] });
     expect(recordedShares).to.equal(userVaultShares);
   });
-<<<<<<< HEAD
-=======
   it("previewMint returns required assets; mint mints exact shares; ledger updates via resolved vault", async () => {
     const { pub, deployer, userA, erc20, vaultA, factory, rewards } = await deployFixture();
     const a = userA.account!.address as `0x${string}`;
@@ -455,5 +453,4 @@ describe("SendEarnRewards v2 (ERC4626 only; streaming deferred)", () => {
     const aggUnderlying1: bigint = await pub.readContract({ address: erc20.address, abi: (await hre.artifacts.readArtifact("ERC20Mintable")).abi as any, functionName: "balanceOf", args: [rewards.address] });
     expect(aggUnderlying1).to.equal(0n);
   });
->>>>>>> 1e31d976 (rewards: depositVaultShares pre-NAV; add tests)
 });
