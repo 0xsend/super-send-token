@@ -4,9 +4,7 @@ import hre from "hardhat";
 // CFA v2.1 tests (will fail until implementation wires SuperTokenV1Library.flow and policy)
 // We use local Superfluid mocks (CFAMock, HostMock, SuperTokenMock) to observe flow updates.
 
-const describeCFA = process.env.RUN_CFA === "true" ? describe : describe.skip;
-
-describeCFA("SendEarnRewards v2.1 (CFA flows)", () => {
+describe("SendEarnRewards v2.1 (CFA flows)", () => {
   async function deployCfaFixture() {
     const pub = await hre.viem.getPublicClient();
     const [deployer, userA, userB] = await hre.viem.getWalletClients();

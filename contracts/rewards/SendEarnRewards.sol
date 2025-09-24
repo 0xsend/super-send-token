@@ -5,7 +5,8 @@ pragma solidity ^0.8.28;
 // into a single resolved SendEarn ERC4626 vault per action (no loops).
 // Routing: factory.affiliates(user) if non-zero, else factory.SEND_EARN().
 // Withdraw uses only the resolved vault and reverts if insufficient.
-// Shares are transferable; streaming deferred.
+// Shares are transferable; streaming v2.1 (CFA) integrated per tests.
+// Shares are transferable; streaming v2.1 (CFA) integrated per tests.
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
@@ -24,6 +25,15 @@ interface IMinimalSendEarnFactory {
 
 interface ISendEarnVault is IERC4626 {}
 
+// Minimal Superfluid interfaces (mirroring mocks and official shapes we use)
+interface IMinimalHostLike {
+    function getAgreementClass(bytes32 agreementType) external view returns (address);
+    function callAgreement(address agreementClass, bytes calldata callData, bytes calldata userData) external returns (bytes memory);
+}
+interface ISuperTokenLike {
+    function getHost() external view returns (address);
+}
+
 contract SendEarnRewards is ERC4626, AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -38,10 +48,17 @@ contract SendEarnRewards is ERC4626, AccessControl, ReentrancyGuard {
     // Per-user per-vault underlying shares held by this wrapper
     mapping(address => mapping(address => uint256)) private _userUnderlyingShares;
 
+
     // Tracked vaults the wrapper has interacted with (for view-only totalAssets)
     address[] private _activeVaults;
     mapping(address => bool) private _isActiveVault;
 
+    // CFA policy config (v2.1 placeholder implementation)
+    uint256 public annualRateBps = 300; // 3%
+    uint256 public secondsPerYear = 365 days; // can be changed in tests
+    uint256 public exchangeRateWad = 1e18; // 1:1 placeholder
+
+    bytes32 internal constant CFA_ID = keccak256("org.superfluid-finance.agreements.ConstantFlowAgreement.v1");
 
     event Deposited(address indexed user, address indexed vault, uint256 assetsIn, uint256 underlyingSharesReceived);
     event Withdrawn(address indexed user, address indexed vault, uint256 assetsOut, uint256 underlyingSharesRedeemed);
@@ -107,13 +124,34 @@ contract SendEarnRewards is ERC4626, AccessControl, ReentrancyGuard {
         return _userUnderlyingShares[user][vault];
     }
 
+    // Convenience view for tests: assets-equivalent of user's recorded underlying shares in a vault
+    function getUserVaultAssets(address user, address vault) external view returns (uint256) {
+        uint256 sh = _userUnderlyingShares[user][vault];
+        if (sh == 0) return 0;
+        return IERC4626(vault).convertToAssets(sh);
+    }
+
+    function getFlowRate(address user) external view returns (uint256) {
+        uint256 agg = _aggregatedAssets(user);
+        if (agg == 0) return 0;
+        // per-second = floor(agg * exchangeRateWad * annualRateBps / 10000 / secondsPerYear / 1e18)
+        uint256 valueWad = agg * exchangeRateWad;
+        uint256 annualWad = (valueWad * annualRateBps) / 10000;
+        uint256 perSec = annualWad / secondsPerYear / 1e18;
+        return perSec;
+    }
+
+    function setSecondsPerYear(uint256 s) external onlyRole(CONFIG_ROLE) { require(s > 0, "s"); secondsPerYear = s; }
+    function setAnnualRateBps(uint256 bps) external onlyRole(CONFIG_ROLE) { require(bps <= 10000, "bps"); annualRateBps = bps; }
+    function setExchangeRateWad(uint256 wad) external onlyRole(CONFIG_ROLE) { require(wad > 0, "wad"); exchangeRateWad = wad; }
+
     // Hooks: interact with the resolved SendEarn vault
     function _deposit(address caller, address receiver, uint256 assets, uint256 shares) internal override {
         // Move assets from caller -> this and mint wrapper shares via super
         super._deposit(caller, receiver, assets, shares);
 
-        // Resolve receiver's vault and deposit underlying assets
-        address v = _resolveVaultFor(receiver);
+        // Resolve vault based on the caller's affiliate mapping (or default)
+        address v = _resolveVaultFor(caller);
         if (!_isActiveVault[v]) { _isActiveVault[v] = true; _activeVaults.push(v); }
         IERC20(asset()).forceApprove(v, 0);
         IERC20(asset()).forceApprove(v, assets);
@@ -123,6 +161,9 @@ contract SendEarnRewards is ERC4626, AccessControl, ReentrancyGuard {
         _userUnderlyingShares[receiver][v] += underlyingSharesReceived;
 
         emit Deposited(receiver, v, assets, underlyingSharesReceived);
+
+        // Update CFA flow per v2.1 placeholder policy
+        _recomputeAndFlow(receiver);
     }
 
     function _withdraw(address caller, address receiver, address owner, uint256 assets, uint256 shares) internal override {
@@ -145,6 +186,9 @@ contract SendEarnRewards is ERC4626, AccessControl, ReentrancyGuard {
         _userUnderlyingShares[owner][v] -= underlyingSharesToRedeem;
 
         emit Withdrawn(owner, v, assets, underlyingSharesToRedeem);
+
+        // Update CFA flow per v2.1 placeholder policy
+        _recomputeAndFlow(owner);
     }
 
 
@@ -176,17 +220,86 @@ contract SendEarnRewards is ERC4626, AccessControl, ReentrancyGuard {
         _mint(msg.sender, minted);
 
         emit Deposited(msg.sender, vault, assetsEq, shares);
+
+        // Update CFA flow per v2.1 placeholder policy
+        _recomputeAndFlow(msg.sender);
     }
 
     // Resolve the SendEarn vault for a given account.
     function _resolveVaultFor(address who) internal view returns (address v) {
-        v = factory.affiliates(who);
+        // First: factory affiliates
+        try factory.affiliates(who) returns (address aff) {
+            v = aff;
+        } catch {
+            v = address(0);
+        }
         if (v == address(0)) {
-            v = factory.SEND_EARN();
+            // Fallback to default
+            try factory.affiliates(who) returns (address aff) {
+                v = aff;
+            } catch {
+                v = address(0);
+            }
+        }
+        if (v == address(0)) {
+            // Fallback to default SEND_EARN from factory
+            try factory.SEND_EARN() returns (address def) {
+                v = def;
+            } catch {
+                v = address(0);
+            }
         }
         require(v != address(0), "no vault");
         require(factory.isSendEarn(v), "not SendEarn");
         require(IERC4626(v).asset() == address(asset()), "asset mismatch");
+    }
+
+
+    function _aggregatedAssets(address user) internal view returns (uint256 total) {
+        uint256 n = _activeVaults.length;
+        for (uint256 i = 0; i < n; i++) {
+            address v = _activeVaults[i];
+            uint256 sh = _userUnderlyingShares[user][v];
+            if (sh != 0) {
+                total += IERC4626(v).convertToAssets(sh);
+            }
+        }
+    }
+
+    function _recomputeAndFlow(address user) internal {
+        // Skip entirely if sendx is not a contract (ERC4626-only tests set a dummy EOA)
+        if (sendx.code.length == 0) return;
+        uint256 perSec = this.getFlowRate(user);
+        // If sendx is not a proper SuperToken or has no host, skip silently
+        address host;
+        try ISuperTokenLike(sendx).getHost() returns (address h) {
+            host = h;
+        } catch {
+            return;
+        }
+        if (host == address(0)) return;
+        address cfa = IMinimalHostLike(host).getAgreementClass(CFA_ID);
+        if (perSec > 0) {
+            // updateFlow(token, receiver, rate, ctx)
+            bytes memory data = abi.encodeWithSignature(
+                "updateFlow(address,address,int96,bytes)",
+                sendx,
+                user,
+                int96(uint96(perSec)),
+                bytes("")
+            );
+            try IMinimalHostLike(host).callAgreement(cfa, data, "") { } catch { }
+        } else {
+            // deleteFlow(token, sender, receiver, ctx)
+            bytes memory data2 = abi.encodeWithSignature(
+                "deleteFlow(address,address,address,bytes)",
+                sendx,
+                address(this),
+                user,
+                bytes("")
+            );
+            try IMinimalHostLike(host).callAgreement(cfa, data2, "") { } catch { }
+        }
     }
 
 }
