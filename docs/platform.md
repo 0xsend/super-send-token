@@ -6,10 +6,7 @@
   contracts live here; those remain in the send-token-upgrade repo.
 - The wrapper is for backend-only flows; end users never directly hold
   it.
-- Rewards are streamed via Superfluid CFA (no pool units). The
-SendEarnRewards contract (rewards aggregator) maintains an assets ledger per user across
-  allowed ERC-4626 SendEarn vaults and sets per-user SENDx flows sized
-  from that aggregated value.
+- Rewards streaming (Superfluid CFA) exists in this repo but is deferred in the v2 aggregator. The SendEarnRewards v2 spec (see rewards-aggregator-erc4626.md) focuses on ERC4626 aggregation and routing only; streaming remains documented below and unchanged.
 - Prototyping mode: we mirror official Superfluid patterns/ABIs where
   practical. The aggregator uses minimal Host/CFA interfaces via
   callAgreement to create/update/delete flows.

@@ -1,3 +1,47 @@
+# SendEarnRewards v2: ERC4626 Aggregator (streaming deferred)
+
+This section documents the v2 design for the ERC4626 wrapper/aggregator. It intentionally defers any streaming/Constant Flow Agreement (CFA) behavior. The existing streaming content remains below, unchanged, as reference material and future work.
+
+Status: Spec only (docs-first). Implementation and tests will follow in separate PRs.
+
+## Goals
+- Provide a pooled ERC4626 aggregator that can route deposits into SendEarn ERC4626 vaults while exposing a standard ERC4626 interface to integrators.
+- Shares are transferable (standard ERC20 semantics). No non-transferable override.
+- No streaming dependencies in this spec. Streaming is deferred.
+
+## Asset and conversions
+- The aggregator’s `asset()` equals the underlying asset used by all routed SendEarn vaults (e.g., USDC).
+- Follow standard ERC4626 math for conversions; do not assume 1:1 shares/assets. `totalAssets()` reflects the current value of all held SendEarn vault shares converted via each vault’s `convertToAssets`.
+
+```
+// Pseudocode for totalAssets
+sum over all held SendEarn vaults v:
+  total += IERC4626(v).convertToAssets(IERC4626(v).balanceOf(address(this)))
+```
+
+## Deposit routing (selection policy)
+Resolution order for deposits by caller:
+1) If `factory.affiliates(caller) != address(0)`, route deposit to that SendEarn vault.
+2) Else, let `d = factory.SEND_EARN()` (the default SendEarn vault). If `IERC20(d).balanceOf(caller) > 0` (caller already holds default shares), prefer `d`.
+3) Else, route to `d`.
+
+All routed targets MUST satisfy:
+- `factory.isSendEarn(vault) == true`
+- `IERC4626(vault).asset() == address(asset())`
+
+## Withdraw policy (gas‑efficient; no loops)
+- Withdraw uses a single vault only: resolve the vault via `affiliates(owner)`; if empty, use `SEND_EARN()`.
+- Redeem from that resolved vault exclusively; do not loop across multiple vaults.
+- If the resolved vault position is insufficient to satisfy the requested assets/shares, revert. A non‑standard helper such as `withdrawFrom(vault, assets)` may be introduced later if finer control is desired.
+
+## Transferability
+- Aggregator shares follow normal ERC20 semantics: transfers are allowed. The aggregator does not maintain per‑user vault ledgers.
+
+## Optional onboarding (deferred)
+- A future helper like `depositVaultShares(vault, shares)` may be added to onboard existing SendEarn shares. Not part of this spec.
+
+---
+
 # SendEarnRewards (formerly RewardsAggregator): ERC4626-Compatible Wrapper with CFA Flows
 
 The `SendEarnRewards` contract (formerly RewardsAggregator) has been refactored to provide full ERC4626 compatibility while preserving the CFA (Constant Flow Agreement) streaming rewards mechanism. This document explains the changes and usage patterns.
