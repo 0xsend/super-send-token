@@ -1,44 +1,168 @@
 import { expect } from "chai";
 import hre from "hardhat";
 
-// v2 ERC4626 Aggregator tests (streaming deferred)
-// Intent: outline domain behavior; many cases are pending until the implementation is rewritten.
-// Template sources used (no blind code):
-// - Existing spec structure: super-send-token/test/rewards/SendEarnRewards.spec.ts
-// - Factory interface semantics: send-earn-contracts/src/interfaces/ISendEarnFactory.sol
-// - Vault mocks: super-send-token/contracts/mocks/MinimalVault.sol (ERC4626TestVault)
-
 describe("SendEarnRewards v2 (ERC4626 only; streaming deferred)", () => {
-  it.skip("routes deposit to affiliates(caller) when set; otherwise prefers default SEND_EARN if caller already holds default shares", async function () {
-    // Pending: requires v2 implementation (no CFA calls in hooks) and a factory mock exposing affiliates() and SEND_EARN().
-    // Outline:
-    // - Deploy ERC20Mintable (underlying)
-    // - Deploy 2 ERC4626TestVaults (affiliateVault, defaultVault)
-    // - Deploy SendEarnFactoryAffiliatesMock
-    // - Set isSendEarn for both vaults; set SEND_EARN = defaultVault; set affiliates[user] = affiliateVault
-    // - Deploy v2 aggregator (asset = underlying)
-    // - Approve+deposit X assets via aggregator → expect aggregator to hold shares in affiliateVault
-    // - Clear affiliates[user]; give user direct seUSDC in defaultVault; deposit again → expect route to defaultVault
+  async function deployFixture() {
+    const [deployer, userA, userB] = await hre.viem.getWalletClients();
+    const pub = await hre.viem.getPublicClient();
+
+    // Underlying ERC20
+    const erc20 = await hre.viem.deployContract(
+      "ERC20Mintable",
+      ["MockUSD", "mUSD"] as const,
+      { client: { wallet: deployer } }
+    );
+
+    // Two SendEarn-like ERC4626 test vaults
+    const vaultA = await hre.viem.deployContract(
+      "ERC4626TestVault",
+      [erc20.address, "VaultA", "vA"] as const,
+      { client: { wallet: deployer } }
+    );
+    const vaultB = await hre.viem.deployContract(
+      "ERC4626TestVault",
+      [erc20.address, "VaultB", "vB"] as const,
+      { client: { wallet: deployer } }
+    );
+
+    // Factory mock with affiliates + SEND_EARN
+    const factory = await hre.viem.deployContract(
+      "SendEarnFactoryAffiliatesMock",
+      [] as const,
+      { client: { wallet: deployer } }
+    );
+    // Mark both vaults as SendEarn and set default to B
+    await deployer.writeContract({ address: factory.address, abi: (await hre.artifacts.readArtifact("SendEarnFactoryAffiliatesMock")).abi as any, functionName: "setIsSendEarn", args: [vaultA.address, true] });
+    await deployer.writeContract({ address: factory.address, abi: (await hre.artifacts.readArtifact("SendEarnFactoryAffiliatesMock")).abi as any, functionName: "setIsSendEarn", args: [vaultB.address, true] });
+    await deployer.writeContract({ address: factory.address, abi: (await hre.artifacts.readArtifact("SendEarnFactoryAffiliatesMock")).abi as any, functionName: "setSendEarn", args: [vaultB.address] });
+
+    // Aggregator (sendx can be any non-zero address; unused)
+    const name = "SendEarnRewards v2";
+    const symbol = "sREW2";
+    const sendx = deployer.account!.address as `0x${string}`;
+    const rewards = await hre.viem.deployContract(
+      "SendEarnRewards",
+      [sendx, factory.address, erc20.address, name, symbol, deployer.account!.address] as const,
+      { client: { wallet: deployer } }
+    );
+
+    return { pub, deployer, userA, userB, erc20, vaultA, vaultB, factory, rewards };
+  }
+
+  it("routes deposit to affiliates(user) when set; records underlying shares", async () => {
+    const { pub, deployer, userA, erc20, vaultA, vaultB, factory, rewards } = await deployFixture();
+    const a = userA.account!.address as `0x${string}`;
+
+    // Mint to userA and approve aggregator
+    await deployer.writeContract({ address: erc20.address, abi: (await hre.artifacts.readArtifact("ERC20Mintable")).abi as any, functionName: "mint", args: [a, 1_000n * 10n ** 18n] as any });
+    await userA.writeContract({ address: erc20.address, abi: (await hre.artifacts.readArtifact("ERC20Mintable")).abi as any, functionName: "approve", args: [rewards.address, 500n * 10n ** 18n] });
+
+    // Set affiliates(userA) = vaultA
+    await userA.writeContract({ address: factory.address, abi: (await hre.artifacts.readArtifact("SendEarnFactoryAffiliatesMock")).abi as any, functionName: "setAffiliate", args: [a, vaultA.address] });
+
+    const assets = 200n * 10n ** 18n;
+    await userA.writeContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "deposit", args: [assets, a] });
+
+    // Wrapper shares 1:1
+    const bal = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "balanceOf", args: [a] });
+    expect(bal).to.equal(assets);
+
+    // Underlying shares recorded
+    const underlyingShares: bigint = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "userUnderlyingShares", args: [a, vaultA.address] });
+    const expectedShares = await pub.readContract({ address: vaultA.address, abi: (await hre.artifacts.readArtifact("ERC4626TestVault")).abi as any, functionName: "convertToShares", args: [assets] });
+    expect(underlyingShares).to.equal(expectedShares);
+
+    // Default SEND_EARN is vaultB; ensure no shares recorded there for userA yet
+    const zeroShares: bigint = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "userUnderlyingShares", args: [a, vaultB.address] });
+    expect(zeroShares).to.equal(0n);
   });
 
-  it.skip("shares are transferable (no non-transferable override)", async function () {
-    // Pending: current implementation overrides _update to disallow transfers.
-    // Outline:
-    // - Mint aggregator shares to user (via deposit)
-    // - transfer to other user → should succeed
+  it("withdraw uses only the resolved vault and reverts if insufficient; succeeds when sufficient", async () => {
+    const { pub, deployer, userA, erc20, vaultA, factory, rewards } = await deployFixture();
+    const a = userA.account!.address as `0x${string}`;
+
+    // Mint and approve
+    await deployer.writeContract({ address: erc20.address, abi: (await hre.artifacts.readArtifact("ERC20Mintable")).abi as any, functionName: "mint", args: [a, 1_000n * 10n ** 18n] as any });
+    await userA.writeContract({ address: erc20.address, abi: (await hre.artifacts.readArtifact("ERC20Mintable")).abi as any, functionName: "approve", args: [rewards.address, 500n * 10n ** 18n] });
+
+    // affiliates(userA)=vaultA; deposit 100
+    await userA.writeContract({ address: factory.address, abi: (await hre.artifacts.readArtifact("SendEarnFactoryAffiliatesMock")).abi as any, functionName: "setAffiliate", args: [a, vaultA.address] });
+    const depositAmt = 100n * 10n ** 18n;
+    await userA.writeContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "deposit", args: [depositAmt, a] });
+
+    // Change affiliate to zero (default), withdraw should now resolve to default and revert due to no underlying shares there
+    await userA.writeContract({ address: factory.address, abi: (await hre.artifacts.readArtifact("SendEarnFactoryAffiliatesMock")).abi as any, functionName: "setAffiliate", args: [a, "0x0000000000000000000000000000000000000000"] });
+    let reverted = false;
+    try {
+      await userA.simulateContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "withdraw", args: [10n * 10n ** 18n, a, a] });
+    } catch { reverted = true; }
+    expect(reverted).to.eq(true);
+
+    // Set affiliate back to vaultA and withdraw 40 (single vault)
+    await userA.writeContract({ address: factory.address, abi: (await hre.artifacts.readArtifact("SendEarnFactoryAffiliatesMock")).abi as any, functionName: "setAffiliate", args: [a, vaultA.address] });
+    await userA.writeContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "withdraw", args: [40n * 10n ** 18n, a, a] });
+
+    const balAfter = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "balanceOf", args: [a] });
+    expect(balAfter).to.equal(depositAmt - 40n * 10n ** 18n);
   });
 
-  it.skip("totalAssets equals the sum over held SendEarn vault positions converted via convertToAssets", async function () {
-    // Pending: current implementation uses 1:1 accounting; v2 should compute sum over held vaults.
-    // Outline:
-    // - After routing deposits to two vaults, read totalAssets and compare to per-vault convertToAssets balances
+  it("totalAssets equals sum over tracked vaults convertToAssets(wrapper-held shares)", async () => {
+    const { pub, deployer, userA, erc20, vaultA, vaultB, factory, rewards } = await deployFixture();
+    const a = userA.account!.address as `0x${string}`;
+
+    await deployer.writeContract({ address: erc20.address, abi: (await hre.artifacts.readArtifact("ERC20Mintable")).abi as any, functionName: "mint", args: [a, 2_000n * 10n ** 18n] as any });
+    await userA.writeContract({ address: erc20.address, abi: (await hre.artifacts.readArtifact("ERC20Mintable")).abi as any, functionName: "approve", args: [rewards.address, 2_000n * 10n ** 18n] });
+
+    // Deposit 150 into affiliate vaultA
+    await userA.writeContract({ address: factory.address, abi: (await hre.artifacts.readArtifact("SendEarnFactoryAffiliatesMock")).abi as any, functionName: "setAffiliate", args: [a, vaultA.address] });
+    await userA.writeContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "deposit", args: [150n * 10n ** 18n, a] });
+
+    // Deposit 50 into default vaultB (clear affiliate)
+    await userA.writeContract({ address: factory.address, abi: (await hre.artifacts.readArtifact("SendEarnFactoryAffiliatesMock")).abi as any, functionName: "setAffiliate", args: [a, "0x0000000000000000000000000000000000000000"] });
+    await userA.writeContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "deposit", args: [50n * 10n ** 18n, a] });
+
+    // Compute expected total assets from wrapper-held shares in both vaults
+    const sharesA = await pub.readContract({ address: vaultA.address, abi: (await hre.artifacts.readArtifact("ERC4626TestVault")).abi as any, functionName: "balanceOf", args: [rewards.address] });
+    const sharesB = await pub.readContract({ address: vaultB.address, abi: (await hre.artifacts.readArtifact("ERC4626TestVault")).abi as any, functionName: "balanceOf", args: [rewards.address] });
+    const assetsA = await pub.readContract({ address: vaultA.address, abi: (await hre.artifacts.readArtifact("ERC4626TestVault")).abi as any, functionName: "convertToAssets", args: [sharesA] });
+    const assetsB = await pub.readContract({ address: vaultB.address, abi: (await hre.artifacts.readArtifact("ERC4626TestVault")).abi as any, functionName: "convertToAssets", args: [sharesB] });
+
+    const total = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "totalAssets", args: [] });
+    expect(total).to.equal((assetsA as bigint) + (assetsB as bigint));
   });
 
-it.skip("withdraw uses only the resolved vault and reverts if insufficient (no loops)", async function () {
-    // Gas-efficient policy: no multi-vault loops in withdraw.
-    // Outline:
-    // - With positions in two vaults (historical deposits), set affiliates(owner) to affiliateVault so it resolves there
-    // - Attempt withdraw X where affiliateVault can fully satisfy → succeeds and only that vault’s position decreases
-    // - Attempt withdraw Y where affiliateVault cannot satisfy → expect revert (no fallback loop into other vault)
+  it("transfers re-attribute underlying shares proportionally across sender's active vaults", async () => {
+    const { pub, deployer, userA, userB, erc20, vaultA, factory, rewards } = await deployFixture();
+    const a = userA.account!.address as `0x${string}`;
+    const b = userB.account!.address as `0x${string}`;
+
+    await deployer.writeContract({ address: erc20.address, abi: (await hre.artifacts.readArtifact("ERC20Mintable")).abi as any, functionName: "mint", args: [a, 1_000n * 10n ** 18n] as any });
+    await userA.writeContract({ address: erc20.address, abi: (await hre.artifacts.readArtifact("ERC20Mintable")).abi as any, functionName: "approve", args: [rewards.address, 1_000n * 10n ** 18n] });
+
+    // affiliates(userA)=vaultA; deposit 300
+    await userA.writeContract({ address: factory.address, abi: (await hre.artifacts.readArtifact("SendEarnFactoryAffiliatesMock")).abi as any, functionName: "setAffiliate", args: [a, vaultA.address] });
+    const depositAmt = 300n * 10n ** 18n;
+    await userA.writeContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "deposit", args: [depositAmt, a] });
+
+    const senderSharesBefore = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "balanceOf", args: [a] });
+    const fromUnderlyingBefore = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "userUnderlyingShares", args: [a, vaultA.address] });
+
+    // Transfer 120 wrapper shares to userB
+    const xfer = 120n * 10n ** 18n;
+    await userA.writeContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "transfer", args: [b, xfer] });
+
+    const moved = (fromUnderlyingBefore as bigint) * xfer / (senderSharesBefore as bigint);
+    const fromUnderlyingAfter = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "userUnderlyingShares", args: [a, vaultA.address] });
+    const toUnderlyingAfter = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "userUnderlyingShares", args: [b, vaultA.address] });
+
+    expect((fromUnderlyingBefore as bigint) - (fromUnderlyingAfter as bigint)).to.equal(moved);
+    expect(toUnderlyingAfter).to.equal(moved);
+
+    // Set affiliates(userB)=vaultA then withdraw a portion successfully
+    await userB.writeContract({ address: factory.address, abi: (await hre.artifacts.readArtifact("SendEarnFactoryAffiliatesMock")).abi as any, functionName: "setAffiliate", args: [b, vaultA.address] });
+    await userB.writeContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "withdraw", args: [20n * 10n ** 18n, b, b] });
+
+    const toBal = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "balanceOf", args: [b] });
+    expect(toBal).to.equal(xfer - 20n * 10n ** 18n);
   });
 });
