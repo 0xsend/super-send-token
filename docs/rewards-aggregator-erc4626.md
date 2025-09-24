@@ -59,51 +59,136 @@ All routed targets MUST satisfy:
     - `assets += IERC4626(v).convertToAssets(IERC4626(v).balanceOf(address(this)))`
 - This is a view-only iteration. State-changing flows remain single-vault without loops.
 
-## CFA streaming integration (v2.1) — Superfluid “flow” helper
-Status: planned in v2.1 (docs-first; implementation next).
+## CFA streaming integration (v2.1) — Professional spec
 
-Goal
-- Stream SENDx (SuperToken) per user at a rate proportional to their current value in the aggregator.
-- Use Superfluid’s SuperTokenV1Library `flow(ISuperToken token, address receiver, int96 rate)` helper to create/update/delete flows.
+Status: planned (docs-first); implementation follows. The flowRate calculation component is not finalized; all calls to `flow` are placeholders pending that integration.
 
-Key concepts
-- Token: `sendx` (constructor arg), an ISuperToken. The aggregator must be pre-funded with SENDx to cover the flow buffer.
-- Triggers: Recompute a user’s flow after each state-changing event that affects the user’s value:
-  - deposit(receiver)
-  - withdraw(owner)
-  - transfer(from→to): recompute for both parties after proportional re-attribution
-- Value basis (per user): sum across the user’s active vaults of `convertToAssets(_userUnderlyingShares[user][vault])`.
-- Policy params:
-  - `annualRateBps`: annualized rate in basis points (e.g., 300 = 3%)
-  - `secondsPerYear`: denominator to convert annual to per-second
-  - `exchangeRateWad`: asset→SENDx conversion (fixed-point); default 1e18 for 1:1
-- Flow math (per second):
-  - `perSecond = floor( (sumAssets * exchangeRateWad) * annualRateBps / 10_000 / secondsPerYear / 1e18 )`
-  - Use `int96` cast; if perSecond==0, call `flow(token, user, 0)` to delete.
+### Purpose and scope
+- Provide continuous SENDx streaming to users sized by the value of their aggregated SendEarn positions held via the aggregator.
+- Integrate Superfluid using SuperTokenV1Library `flow` helper to create/update/delete flows on state changes.
+- Scope covers deposit (vault token ingestion), withdraw, and redeem. ERC20 share transfers do not alter ledger or flows.
 
-Integration outline (pseudocode)
-- Import library: `using SuperTokenV1Library for ISuperToken;`
-- After event, recompute and set flow:
-```
-function _updateFlow(address user) internal {
-  uint256 assets = 0;
-  for (address v in _userActiveVaults[user]) {
-    uint256 uShares = _userUnderlyingShares[user][v];
-    if (uShares == 0) continue;
-    assets += IERC4626(v).convertToAssets(uShares);
-  }
-  uint256 wad = assets * exchangeRateWad;
-  uint256 annual = wad * annualRateBps / 10_000;
-  uint256 perSec = annual / secondsPerYear / 1e18;
-  int96 rate = int96(int256(perSec));
-  sendx.flow(user, rate); // create/update/delete as needed
-}
-```
+### Definitions
+- Vault: a SendEarn ERC4626 vault approved by the factory.
+- Vault shares: ERC4626 shares of a SendEarn vault (seASSET tokens) held by the aggregator.
+- Aggregated assets (per user): sum over user’s vaults of `IERC4626(v).convertToAssets(userUnderlyingShares[v])`.
+- sendx: the SuperToken used for streaming (constructor arg). Must be pre-funded in the aggregator.
 
-Operational notes
-- Pre-fund with SENDx to satisfy CFA buffer or the flow creation will revert.
-- Flows are per-user, from the aggregator to the user.
-- If you change `annualRateBps`/`exchangeRateWad`, you may optionally batch-recompute flows for a set of users (future helper).
+### External dependencies
+- Superfluid protocol; use `SuperTokenV1Library` for `flow(ISuperToken token, address receiver, int96 rate)`.
+- SendEarnFactory (gating): `isSendEarn(vault)`; `SEND_EARN()` default vault.
+- ERC4626 interface: `convertToAssets(shares)`, `convertToShares(assets)`.
+
+### State model (relevant to streaming)
+- Per-user, per-vault underlying shares:
+  - `_userUnderlyingShares[user][vault] -> uint256`
+- Wrapper-wide active vaults (for view-only aggregation):
+  - `_activeVaults[]` and `_isActiveVault[vault]`
+- Note: we do not modify per-user ledgers on ERC20 transfers. Flows/ledgers are updated only on deposit/withdraw/redeem.
+
+### Invariants
+- Vault gating: `factory.isSendEarn(vault) == true` before accepting any vault shares.
+- Asset invariant: `IERC4626(vault).asset() == asset()` of the aggregator.
+- Single-vault mutations: withdraw/redeem operate on a single, resolved vault per action; no multi-vault loops.
+- No ledger changes on ERC20 share transfers.
+
+### Resolution policy
+- For any action on behalf of `account`: resolve `vault = factory.affiliates(account)` if non-zero; else `factory.SEND_EARN()`.
+- Affiliate changes affect future actions only; existing per-user vault share ledgers are not migrated.
+
+### Flows and triggers
+- Trigger `_recomputeAndFlow(user)` after:
+  - Deposit (vault token ingestion)
+  - Withdraw (assets)
+  - Redeem (shares)
+- Transfers DO NOT trigger flow updates.
+
+### Flow rate policy (placeholder)
+- `flowRate = f(aggregatedAssets(user), policy)` where:
+  - `aggregatedAssets(user) = Σ_v convertToAssets(_userUnderlyingShares[user][v])`
+  - Policy inputs (configurable): `annualRateBps`, `secondsPerYear`, `exchangeRateWad`
+- Compute per-second rate (placeholder):
+  - `valueWad = aggregatedAssets * exchangeRateWad`
+  - `annualWad = valueWad * annualRateBps / 10_000`
+  - `perSecond = floor(annualWad / secondsPerYear / 1e18)`
+  - `rate = int96(perSecond)`; if `rate == 0`, delete flow
+- NOTE: Final policy/oracle component to be integrated; until then, treat `flow()` invocations as stubs.
+
+### Lifecycle flows
+
+#### Deposit (vault token ingestion)
+1) User transfers SendEarn vault shares to SendEarnRewards (e.g., `depositVaultShares(vault, shares)`).
+2) Validate: `factory.isSendEarn(vault)` and `IERC4626(vault).asset() == asset()`.
+3) Compute assets: `assets = IERC4626(vault).convertToAssets(shares)` (beware rounding; prefer protocol’s conversion semantics).
+4) Ledger updates:
+   - `_userUnderlyingShares[user][vault] += shares` (store underlying shares to preserve precise value accrual semantics)
+   - Optionally maintain `totalAssetsByUser[user]` in view-only helpers by summing conversions on demand.
+5) Track wrapper-wide vault activity: add `vault` to `_activeVaults` if first use.
+6) Stream update (placeholder): call `sendx.flow(user, flowRate)`.
+7) Events: `Deposited(user, vault, assets, shares)`.
+
+#### Withdraw (assets)
+1) Resolve vault; compute required shares: `shares = IERC4626(vault).previewWithdraw(assets)`.
+2) Verify user ledger has at least `shares` recorded; redeem from `vault` to this contract; send assets to `receiver=user`.
+3) Ledger updates: `_userUnderlyingShares[user][vault] -= shares`.
+4) Stream update (placeholder): call `sendx.flow(user, flowRate)`.
+5) Events: `Withdrawn(user, vault, assets, shares)`.
+
+#### Redeem (shares)
+1) Resolve vault and redeem directly in shares path.
+2) Convert shares→assets via `IERC4626(vault).redeem(shares, this, this)` then send assets to `receiver=user`.
+3) Ledger updates and stream update as in Withdraw.
+
+### Rounding and decimals
+- Use ERC4626 preview functions for forward-looking conversions (`previewWithdraw`, `previewRedeem`).
+- When converting vault shares to assets for aggregation, use `convertToAssets(shares)`; rounding follows the vault’s ERC4626 implementation.
+
+### Reentrancy and safety
+- Wrap public entry points with `nonReentrant`.
+- Use `forceApprove` (reset-to-zero then set) for ERC20 approvals.
+- Never loop across multiple vaults in state-changing flows.
+
+### Observability
+- Events: `Deposited(user, vault, assets, underlyingShares)`, `Withdrawn(user, vault, assets, underlyingShares)`.
+- Views: `userUnderlyingShares(user, vault)`, `totalAssets()` (wrapper-wide; view-only over `_activeVaults`).
+
+### Failure modes
+- Not SendEarn vault: revert.
+- Asset mismatch: revert.
+- Insufficient underlying shares on Withdraw/Redeem: revert.
+- Flow creation/update may revert if SENDx buffer is insufficient (operator choice: pre-fund or skip flow set).
+
+### Implementation notes
+- Keep vault interaction minimal and single-target per action.
+- Flow update hooks are invoked after ledger mutation for the acting user.
+- Do not attempt to adjust flows on ERC20 transfers.
+
+### Open items
+- Plug in final flowRate component (oracle/policy); unit test flow lifecycle after integration.
+- Optional: on admin policy change, batch-recompute flows across a given user subset.
+Status: planned in v2.1 (docs-first; implementation next). Note: we do not yet have the final flowRate calculation component; calls to `flow` should be treated as placeholders until that piece is finalized.
+
+Library
+- Use Superfluid’s SuperTokenV1Library `flow(ISuperToken token, address receiver, int96 rate)` to create/update/delete flows.
+
+Deposit (vault token ingestion)
+1) User deposits a SendEarn vault token (shares) into SendEarnRewards.
+2) SendEarnRewards checks `factory.isSendEarn(vault)`.
+3) SendEarnRewards computes assets for the vault: `assets = IERC4626(vault).convertToAssets(shares)`.
+4) SendEarnRewards updates its internal mappings linking vaults ⇄ users ⇄ assets (e.g., `assetsByVault[user][vault] += assets`, `totalAssetsByUser[user] += assets`).
+5) SendEarnRewards calls `sendx.flow(user, flowRate)` via the library to reflect the new aggregated assets (flowRate: TODO — pending final component).
+
+Withdraw
+1) SendEarnRewards withdraws assets held by the SendEarn underlying vault for the caller (redeeming vault shares it holds on behalf of the user). Receiver is the user linked to the vault.
+2) SendEarnRewards updates mappings (decrement the user’s assets for that vault and total assets).
+3) SendEarnRewards calls `sendx.flow(user, flowRate)` to reflect the reduced aggregated assets (flowRate: TODO — pending final component).
+
+Redeem
+- Same as withdraw but the entry uses shares (wrapper redeem path should convert shares → assets and follow the same mapping + flow update sequence).
+
+Notes
+- Exact `flowRate` computation is intentionally left as a TODO. We will integrate the final component (oracle/policy) to determine `flowRate` from the user’s aggregated assets.
+- This flow does not rely on re-attributing underlying shares during ERC20 transfers. Flows and mappings update on deposit/withdraw/redeem only.
 
 References
 - SuperTokenV1Library: https://github.com/superfluid-finance/protocol-monorepo/blob/dev/packages/ethereum-contracts/contracts/apps/SuperTokenV1Library.sol
