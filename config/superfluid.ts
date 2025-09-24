@@ -9,6 +9,8 @@ export type NetworkConfig = {
   resolver: `0x${string}`;
   host: `0x${string}`;
   cfaV1: `0x${string}`;
+  // Optional: CFAv1 Forwarder address (only if used by admin helpers). Populate from official networks table.
+  cfav1Forwarder?: `0x${string}`;
   superTokenFactory: `0x${string}`;
   wrapperName: string;
   wrapperSymbol: string;
