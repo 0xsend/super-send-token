@@ -59,6 +59,56 @@ All routed targets MUST satisfy:
     - `assets += IERC4626(v).convertToAssets(IERC4626(v).balanceOf(address(this)))`
 - This is a view-only iteration. State-changing flows remain single-vault without loops.
 
+## CFA streaming integration (v2.1) — Superfluid “flow” helper
+Status: planned in v2.1 (docs-first; implementation next).
+
+Goal
+- Stream SENDx (SuperToken) per user at a rate proportional to their current value in the aggregator.
+- Use Superfluid’s SuperTokenV1Library `flow(ISuperToken token, address receiver, int96 rate)` helper to create/update/delete flows.
+
+Key concepts
+- Token: `sendx` (constructor arg), an ISuperToken. The aggregator must be pre-funded with SENDx to cover the flow buffer.
+- Triggers: Recompute a user’s flow after each state-changing event that affects the user’s value:
+  - deposit(receiver)
+  - withdraw(owner)
+  - transfer(from→to): recompute for both parties after proportional re-attribution
+- Value basis (per user): sum across the user’s active vaults of `convertToAssets(_userUnderlyingShares[user][vault])`.
+- Policy params:
+  - `annualRateBps`: annualized rate in basis points (e.g., 300 = 3%)
+  - `secondsPerYear`: denominator to convert annual to per-second
+  - `exchangeRateWad`: asset→SENDx conversion (fixed-point); default 1e18 for 1:1
+- Flow math (per second):
+  - `perSecond = floor( (sumAssets * exchangeRateWad) * annualRateBps / 10_000 / secondsPerYear / 1e18 )`
+  - Use `int96` cast; if perSecond==0, call `flow(token, user, 0)` to delete.
+
+Integration outline (pseudocode)
+- Import library: `using SuperTokenV1Library for ISuperToken;`
+- After event, recompute and set flow:
+```
+function _updateFlow(address user) internal {
+  uint256 assets = 0;
+  for (address v in _userActiveVaults[user]) {
+    uint256 uShares = _userUnderlyingShares[user][v];
+    if (uShares == 0) continue;
+    assets += IERC4626(v).convertToAssets(uShares);
+  }
+  uint256 wad = assets * exchangeRateWad;
+  uint256 annual = wad * annualRateBps / 10_000;
+  uint256 perSec = annual / secondsPerYear / 1e18;
+  int96 rate = int96(int256(perSec));
+  sendx.flow(user, rate); // create/update/delete as needed
+}
+```
+
+Operational notes
+- Pre-fund with SENDx to satisfy CFA buffer or the flow creation will revert.
+- Flows are per-user, from the aggregator to the user.
+- If you change `annualRateBps`/`exchangeRateWad`, you may optionally batch-recompute flows for a set of users (future helper).
+
+References
+- SuperTokenV1Library: https://github.com/superfluid-finance/protocol-monorepo/blob/dev/packages/ethereum-contracts/contracts/apps/SuperTokenV1Library.sol
+- CFA docs: https://docs.superfluid.finance/superfluid/developers/constant-flow-agreement-cfa
+
 ## Transferability
 - Aggregator shares follow normal ERC20 semantics: transfers are allowed. The aggregator does not maintain per‑user vault ledgers.
 

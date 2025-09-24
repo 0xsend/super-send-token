@@ -42,6 +42,7 @@ contract SendEarnRewards is ERC4626, AccessControl, ReentrancyGuard {
     address[] private _activeVaults;
     mapping(address => bool) private _isActiveVault;
 
+
     event Deposited(address indexed user, address indexed vault, uint256 assetsIn, uint256 underlyingSharesReceived);
     event Withdrawn(address indexed user, address indexed vault, uint256 assetsOut, uint256 underlyingSharesRedeemed);
 
@@ -78,7 +79,6 @@ contract SendEarnRewards is ERC4626, AccessControl, ReentrancyGuard {
     }
 
     // Accounting: sum across tracked SendEarn vaults (view-only) for totalAssets.
-    // Note: conversions remain 1:1 for simplicity while streaming is deferred.
     function totalAssets() public view override returns (uint256 assets) {
         uint256 n = _activeVaults.length;
         for (uint256 i = 0; i < n; i++) {
@@ -147,4 +147,5 @@ contract SendEarnRewards is ERC4626, AccessControl, ReentrancyGuard {
         require(factory.isSendEarn(v), "not SendEarn");
         require(IERC4626(v).asset() == address(asset()), "asset mismatch");
     }
+
 }
