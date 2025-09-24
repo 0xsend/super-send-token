@@ -9,6 +9,11 @@ Status: Spec only (docs-first). Implementation and tests will follow in separate
 - Shares are transferable (standard ERC20 semantics). No non-transferable override.
 - No streaming dependencies in this spec. Streaming is deferred.
 
+## Data model and asset/conversions
+- Per-user per-vault underlying shares: the wrapper attributes underlying SendEarn vault shares to users in `_userUnderlyingShares[user][vault]`.
+- Active vaults (wrapper-wide): first time a deposit is made into a vault, it’s added to `_activeVaults` for view-only `totalAssets()`.
+- Active vaults (per-user): first time a user receives underlying shares for a vault, it’s added to that user’s active set for proportional re‑attribution on ERC20 transfers (no external calls).
+
 ## Asset and conversions
 - The aggregator’s `asset()` equals the underlying asset used by all routed SendEarn vaults (e.g., USDC).
 - Follow standard ERC4626 math for conversions; do not assume 1:1 shares/assets. `totalAssets()` reflects the current value of all held SendEarn vault shares converted via each vault’s `convertToAssets`.
@@ -20,6 +25,10 @@ sum over all held SendEarn vaults v:
 ```
 
 ## Deposit routing (selection policy)
+Resolution order for each action (deposit/withdraw):
+- Use `affiliates(account)` if non-zero; else `SEND_EARN()`.
+- Note: Changing your affiliate does not migrate legacy underlying shares. It only affects future actions’ resolution.
+  - Example: if you deposited into default vault and later set an affiliate to a different vault, withdraw resolves to the new affiliate vault and will revert unless you hold underlying shares there.
 Resolution order for deposits by caller:
 1) If `factory.affiliates(caller) != address(0)`, route deposit to that SendEarn vault.
 2) Else, let `d = factory.SEND_EARN()` (the default SendEarn vault). If `IERC20(d).balanceOf(caller) > 0` (caller already holds default shares), prefer `d`.
@@ -31,8 +40,24 @@ All routed targets MUST satisfy:
 
 ## Withdraw policy (gas‑efficient; no loops)
 - Withdraw uses a single vault only: resolve the vault via `affiliates(owner)`; if empty, use `SEND_EARN()`.
+- Redeem from that resolved vault exclusively; do not call multiple vaults.
+- If the resolved vault position is insufficient to satisfy the requested assets/shares, revert.
+- A non‑standard helper such as `withdrawFrom(vault, assets)` may be introduced later for finer control.
+
+## Transfers (re‑attribute underlying shares, no external calls)
+- Wrapper shares are transferable.
+- On transfer, the wrapper proportionally re‑attributes the sender’s underlying shares across the sender’s active vaults to the receiver in proportion to the transferred wrapper shares over the sender’s pre‑transfer wrapper balance.
+- This is an in‑memory loop over the sender’s active vault list; no vault external calls are made.
+- Practical effect: the receiver can withdraw from any vaults the sender had underlying shares in (subject to the receiver’s affiliate resolution at withdraw time).
+- Withdraw uses a single vault only: resolve the vault via `affiliates(owner)`; if empty, use `SEND_EARN()`.
 - Redeem from that resolved vault exclusively; do not loop across multiple vaults.
 - If the resolved vault position is insufficient to satisfy the requested assets/shares, revert. A non‑standard helper such as `withdrawFrom(vault, assets)` may be introduced later if finer control is desired.
+
+## Total assets (view-only)
+- `totalAssets()` sums across wrapper-held positions:
+  - For each tracked vault v in `_activeVaults`:
+    - `assets += IERC4626(v).convertToAssets(IERC4626(v).balanceOf(address(this)))`
+- This is a view-only iteration. State-changing flows remain single-vault without loops.
 
 ## Transferability
 - Aggregator shares follow normal ERC20 semantics: transfers are allowed. The aggregator does not maintain per‑user vault ledgers.
