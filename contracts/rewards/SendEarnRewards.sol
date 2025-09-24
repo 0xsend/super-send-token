@@ -89,8 +89,18 @@ contract SendEarnRewards is ERC4626, AccessControl, ReentrancyGuard {
             }
         }
     }
-    function _convertToShares(uint256 assets, Math.Rounding) internal view override returns (uint256) { return assets; }
-    function _convertToAssets(uint256 shares, Math.Rounding) internal view override returns (uint256) { return shares; }
+    function _convertToShares(uint256 assets, Math.Rounding rounding) internal view override returns (uint256) {
+        uint256 supply = totalSupply();
+        uint256 total = totalAssets();
+        if (supply == 0 || total == 0) return assets;
+        return Math.mulDiv(assets, supply, total, rounding);
+    }
+    function _convertToAssets(uint256 shares, Math.Rounding rounding) internal view override returns (uint256) {
+        uint256 supply = totalSupply();
+        uint256 total = totalAssets();
+        if (supply == 0) return 0;
+        return Math.mulDiv(shares, total, supply, rounding);
+    }
 
     // Helpers
     function userUnderlyingShares(address user, address vault) external view returns (uint256) {
@@ -135,6 +145,37 @@ contract SendEarnRewards is ERC4626, AccessControl, ReentrancyGuard {
         _userUnderlyingShares[owner][v] -= underlyingSharesToRedeem;
 
         emit Withdrawn(owner, v, assets, underlyingSharesToRedeem);
+    }
+
+
+    // Accept existing SendEarn vault shares and mint aggregator shares by NAV
+    function depositVaultShares(address vault, uint256 shares) external nonReentrant {
+        require(shares > 0, "shares");
+        require(factory.isSendEarn(vault), "not SendEarn");
+        require(IERC4626(vault).asset() == address(asset()), "asset mismatch");
+        if (!_isActiveVault[vault]) { _isActiveVault[vault] = true; _activeVaults.push(vault); }
+
+        // Compute assets-equivalent of incoming vault shares using the vault's ERC4626 conversion
+        uint256 assetsEq = IERC4626(vault).convertToAssets(shares);
+
+        // Snapshot pre-ingestion NAV to align with previewDeposit semantics
+        uint256 supplyBefore = totalSupply();
+        uint256 assetsBefore = totalAssets();
+        uint256 minted;
+        if (supplyBefore == 0 || assetsBefore == 0) {
+            minted = assetsEq;
+        } else {
+            minted = Math.mulDiv(assetsEq, supplyBefore, assetsBefore, Math.Rounding.Floor);
+        }
+
+        // Pull vault shares from user into the aggregator and attribute to sender
+        IERC20(vault).safeTransferFrom(msg.sender, address(this), shares);
+        _userUnderlyingShares[msg.sender][vault] += shares;
+
+        // Mint aggregator shares computed from pre-ingestion NAV
+        _mint(msg.sender, minted);
+
+        emit Deposited(msg.sender, vault, assetsEq, shares);
     }
 
     // Resolve the SendEarn vault for a given account.
