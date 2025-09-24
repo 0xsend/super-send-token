@@ -61,11 +61,12 @@ describe("SendEarnRewards v2 (ERC4626 only; streaming deferred)", () => {
     await userA.writeContract({ address: factory.address, abi: (await hre.artifacts.readArtifact("SendEarnFactoryAffiliatesMock")).abi as any, functionName: "setAffiliate", args: [a, vaultA.address] });
 
     const assets = 200n * 10n ** 18n;
+    const expMint = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "previewDeposit", args: [assets] });
     await userA.writeContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "deposit", args: [assets, a] });
 
-    // Wrapper shares 1:1
+    // Wrapper shares minted per ERC4626 NAV (not 1:1)
     const bal = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "balanceOf", args: [a] });
-    expect(bal).to.equal(assets);
+    expect(bal).to.equal(expMint);
 
     // Underlying shares recorded
     const underlyingShares: bigint = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "userUnderlyingShares", args: [a, vaultA.address] });
@@ -100,10 +101,12 @@ describe("SendEarnRewards v2 (ERC4626 only; streaming deferred)", () => {
 
     // Set affiliate back to vaultA and withdraw 40 (single vault)
     await userA.writeContract({ address: factory.address, abi: (await hre.artifacts.readArtifact("SendEarnFactoryAffiliatesMock")).abi as any, functionName: "setAffiliate", args: [a, vaultA.address] });
+    const burnShares = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "previewWithdraw", args: [40n * 10n ** 18n] });
+    const balBefore = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "balanceOf", args: [a] });
     await userA.writeContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "withdraw", args: [40n * 10n ** 18n, a, a] });
 
     const balAfter = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "balanceOf", args: [a] });
-    expect(balAfter).to.equal(depositAmt - 40n * 10n ** 18n);
+    expect(balBefore - balAfter).to.equal(burnShares);
   });
 
   it("totalAssets equals sum over tracked vaults convertToAssets(wrapper-held shares)", async () => {
@@ -131,7 +134,7 @@ describe("SendEarnRewards v2 (ERC4626 only; streaming deferred)", () => {
     expect(total).to.equal((assetsA as bigint) + (assetsB as bigint));
   });
 
-  it("transfers re-attribute underlying shares proportionally across sender's active vaults", async () => {
+  it("transfers do not modify per-user underlying ledgers", async () => {
     const { pub, deployer, userA, userB, erc20, vaultA, factory, rewards } = await deployFixture();
     const a = userA.account!.address as `0x${string}`;
     const b = userB.account!.address as `0x${string}`;
@@ -151,18 +154,38 @@ describe("SendEarnRewards v2 (ERC4626 only; streaming deferred)", () => {
     const xfer = 120n * 10n ** 18n;
     await userA.writeContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "transfer", args: [b, xfer] });
 
-    const moved = (fromUnderlyingBefore as bigint) * xfer / (senderSharesBefore as bigint);
     const fromUnderlyingAfter = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "userUnderlyingShares", args: [a, vaultA.address] });
     const toUnderlyingAfter = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "userUnderlyingShares", args: [b, vaultA.address] });
 
-    expect((fromUnderlyingBefore as bigint) - (fromUnderlyingAfter as bigint)).to.equal(moved);
-    expect(toUnderlyingAfter).to.equal(moved);
+    // No change to per-user ledgers due to transfer
+    expect(fromUnderlyingAfter).to.equal(fromUnderlyingBefore);
+    expect(toUnderlyingAfter).to.equal(0n);
+  });
+  it("ingests existing SendEarn shares and mints aggregator shares per NAV", async () => {
+    const { pub, deployer, userA, erc20, vaultA, factory, rewards } = await deployFixture();
+    const a = userA.account!.address as `0x${string}`;
 
-    // Set affiliates(userB)=vaultA then withdraw a portion successfully
-    await userB.writeContract({ address: factory.address, abi: (await hre.artifacts.readArtifact("SendEarnFactoryAffiliatesMock")).abi as any, functionName: "setAffiliate", args: [b, vaultA.address] });
-    await userB.writeContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "withdraw", args: [20n * 10n ** 18n, b, b] });
+    // User acquires vaultA shares directly
+    await deployer.writeContract({ address: erc20.address, abi: (await hre.artifacts.readArtifact("ERC20Mintable")).abi as any, functionName: "mint", args: [a, 1_000n * 10n ** 18n] as any });
+    await userA.writeContract({ address: erc20.address, abi: (await hre.artifacts.readArtifact("ERC20Mintable")).abi as any, functionName: "approve", args: [vaultA.address, 600n * 10n ** 18n] });
+    const depositToVault = 250n * 10n ** 18n;
+    await userA.writeContract({ address: vaultA.address, abi: (await hre.artifacts.readArtifact("ERC4626TestVault")).abi as any, functionName: "deposit", args: [depositToVault, a] });
+    const userVaultShares = await pub.readContract({ address: vaultA.address, abi: (await hre.artifacts.readArtifact("ERC4626TestVault")).abi as any, functionName: "balanceOf", args: [a] });
 
-    const toBal = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "balanceOf", args: [b] });
-    expect(toBal).to.equal(xfer - 20n * 10n ** 18n);
+    // Approve aggregator to take vault shares
+    await userA.writeContract({ address: vaultA.address, abi: (await hre.artifacts.readArtifact("ERC4626TestVault")).abi as any, functionName: "approve", args: [rewards.address, userVaultShares] });
+
+    // Expected aggregator shares using NAV
+    const assetsEq = await pub.readContract({ address: vaultA.address, abi: (await hre.artifacts.readArtifact("ERC4626TestVault")).abi as any, functionName: "convertToAssets", args: [userVaultShares] });
+    const expMintAgg = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "previewDeposit", args: [assetsEq] });
+
+    // Ingest shares
+    await userA.writeContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "depositVaultShares", args: [vaultA.address, userVaultShares] });
+
+    const aggBal = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "balanceOf", args: [a] });
+    expect(aggBal).to.equal(expMintAgg);
+
+    const recordedShares = await pub.readContract({ address: rewards.address, abi: (await hre.artifacts.readArtifact("SendEarnRewards")).abi as any, functionName: "userUnderlyingShares", args: [a, vaultA.address] });
+    expect(recordedShares).to.equal(userVaultShares);
   });
 });

@@ -14,7 +14,53 @@ Status: Spec only (docs-first). Implementation and tests will follow in separate
 - Active vaults (wrapper-wide): first time a deposit is made into a vault, it’s added to `_activeVaults` for view-only `totalAssets()`.
 - Active vaults (per-user): first time a user receives underlying shares for a vault, it’s added to that user’s active set for proportional re‑attribution on ERC20 transfers (no external calls).
 
-## Asset and conversions
+## Asset, conversions, and NAV-based accounting (v2.0)
+- ERC4626 aggregator with `asset()` equal to the underlying asset used by all SendEarn vaults (e.g., USDC).
+- NAV-based share pricing (standard ERC4626 math): aggregator shares represent a pro‑rata claim on the total aggregated assets held via SendEarn vault shares.
+- Conversions (no 1:1 simplification):
+  - `totalAssets()` equals the sum, over all tracked vaults `v`, of `IERC4626(v).convertToAssets(IERC4626(v).balanceOf(address(this)))`.
+  - `_convertToShares(assets)` and `_convertToAssets(shares)` use standard ERC4626 formulas based on current `totalAssets()` and `totalSupply()`.
+
+### Deposit interfaces
+There are two complementary ways to contribute value:
+
+1) Ingest existing SendEarn vault shares (non‑standard): `depositVaultShares(vault, shares)`
+   - Preconditions: `factory.isSendEarn(vault)` and `IERC4626(vault).asset() == asset()`.
+   - Flow:
+     1) Pull `shares` from the user into the aggregator (transferFrom)
+     2) `assetsEq = IERC4626(vault).convertToAssets(shares)`
+     3) Mint aggregator shares using NAV: `minted = _convertToShares(assetsEq, …)`
+     4) Per‑user ledger: `_userUnderlyingShares[user][vault] += shares`
+     5) Track vault in `_activeVaults` if first use
+     6) Emit `Deposited(user, vault, assetsEq, shares)`
+
+2) Standard ERC4626 deposit of underlying: `deposit(assets, receiver)`
+   - Resolution: `vault = affiliates(receiver)` if non‑zero else `SEND_EARN()`
+   - Flow:
+     1) Mint aggregator shares using NAV: `minted = _convertToShares(assets, …)`
+     2) Aggregator deposits `assets` into `vault`, receiving `vaultShares`
+     3) Per‑user ledger: `_userUnderlyingShares[receiver][vault] += vaultShares`
+     4) Track vault in `_activeVaults` if first use
+     5) Emit `Deposited(receiver, vault, assets, vaultShares)`
+
+### Withdraw and Redeem (single‑vault, no loops)
+- `withdraw(assets, receiver, owner)`
+  - `vault = affiliates(owner)` if non‑zero else `SEND_EARN()`
+  - `sharesNeeded = IERC4626(vault).previewWithdraw(assets)`
+  - Require `_userUnderlyingShares[owner][vault] >= sharesNeeded`
+  - Redeem `sharesNeeded` from `vault` to the aggregator, then send `assets` to `receiver`
+  - Burn aggregator shares using NAV: `_convertToShares(assets, …)`
+  - `_userUnderlyingShares[owner][vault] -= sharesNeeded`
+  - Emit `Withdrawn(owner, vault, assets, sharesNeeded)`
+
+- `redeem(shares, receiver, owner)`
+  - Resolve `vault` as above
+  - Redeem underlying vault shares sufficient to produce `assetsOut`, send to `receiver`
+  - Update per‑user ledger and burn aggregator shares using NAV
+
+### Transfers
+- ERC20 transfers of aggregator shares DO NOT modify per‑user underlying ledgers.
+- Flows (CFA) are updated only on deposit/withdraw/redeem (see CFA v2.1).
 - The aggregator’s `asset()` equals the underlying asset used by all routed SendEarn vaults (e.g., USDC).
 - Follow standard ERC4626 math for conversions; do not assume 1:1 shares/assets. `totalAssets()` reflects the current value of all held SendEarn vault shares converted via each vault’s `convertToAssets`.
 
@@ -55,9 +101,10 @@ All routed targets MUST satisfy:
 
 ## Total assets (view-only)
 - `totalAssets()` sums across wrapper-held positions:
-  - For each tracked vault v in `_activeVaults`:
+  - For each tracked vault `v` in `_activeVaults`:
     - `assets += IERC4626(v).convertToAssets(IERC4626(v).balanceOf(address(this)))`
 - This is a view-only iteration. State-changing flows remain single-vault without loops.
+- Conversions use NAV (no 1:1 shortcut).
 
 ## CFA streaming integration (v2.1) — Professional spec
 
