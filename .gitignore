@@ -8,14 +8,11 @@ broadcast/
 /broadcast/*/31337/
 /broadcast/**/dry-run/
 
-# Docs
-docs/
-
 # Dotenv file
-.env
+.env*
+!.env.sample
 
 node_modules
-.env
 
 # Hardhat files
 /cache

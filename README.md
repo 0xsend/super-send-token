@@ -1,16 +1,13 @@
-# Send Token V1
+# Super Send – SuperToken Wrapper (backend-only)
 
-Initial repository README.
+This repository orchestrates a Superfluid-based SuperToken wrapper
+(SENDx) around the existing SEND v1 token for backend-only flows using
+official Superfluid contracts/ABIs and viem via Hardhat. End users do not
+hold or interact with the wrapper directly.
 
-Notes:
-- Tooling and test commands are introduced in later commits when the
-  project is scaffolded.
-- After scaffolding is in place (package.json, hardhat.config.ts), you can
-  run tests using Hardhat, e.g.:
+Docs by feature:
+- Platform/environment: docs/platform.md
+- Wrapper: docs/wrapper.md
+- SendEarnRewards (ERC4626): docs/rewards-aggregator-erc4626.md
 
-```sh
-# after scaffold
-bunx hardhat test
-# or when a package.json script exists
-bun run test
-```
+For warp.dev terminal guidance and command recipes, see WARP.md.
