@@ -75,7 +75,13 @@ async function isValidWrapper(addr: `0x${string}`): Promise<boolean> {
   } catch { return false; }
 }
 
+<<<<<<< HEAD
 describe("SuperToken wrapper (backend-only)", () => {
+=======
+const describeIntegration = process.env.RUN_INTEGRATION === "true" ? describe : describe.skip;
+
+describeIntegration("SuperToken wrapper (backend-only)", () => {
+>>>>>>> 1e31d976 (rewards: depositVaultShares pre-NAV; add tests)
   it("metadata and wiring", async function () {
     const publicClient = await hre.viem.getPublicClient();
     const chainId = await publicClient.getChainId();

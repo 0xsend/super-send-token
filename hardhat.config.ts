@@ -7,13 +7,11 @@ dotenv.config();
 const config: HardhatUserConfig = {
   solidity: "0.8.28",
   networks: {
-    // base mainnet network
+    // Local in-process network for tests (no forking unless FORK_URL is set)
     hardhat: {
-      chainId: 8453,
+      chainId: 31337,
       hardfork: "cancun",
-      forking: {
-        url: "https://mainnet.base.org",
-      },
+      forking: process.env.FORK_URL ? { url: process.env.FORK_URL } : undefined,
     },
     anvil: {
       url: "http://127.0.0.1:8546",
@@ -23,12 +21,12 @@ const config: HardhatUserConfig = {
     sepolia: {
       url: "https://sepolia.base.org",
       chainId: 84532,
-      accounts: [process.env.EOA_DEPLOYER!],
+      accounts: process.env.EOA_DEPLOYER ? [process.env.EOA_DEPLOYER] : [],
     },
     base: {
       url: "https://mainnet.base.org",
       chainId: 8453,
-      accounts: [process.env.EOA_DEPLOYER!],
+      accounts: process.env.EOA_DEPLOYER ? [process.env.EOA_DEPLOYER] : [],
     },
   },
   etherscan: {

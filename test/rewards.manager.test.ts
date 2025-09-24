@@ -68,7 +68,13 @@ async function resolveFactory(chainId: number): Promise<`0x${string}` | null> {
   return null;
 }
 
+<<<<<<< HEAD
 describe("RewardsManager (Base fork)", () => {
+=======
+const describeIntegration = process.env.RUN_INTEGRATION === "true" ? describe : describe.skip;
+
+describeIntegration("RewardsManager (Base fork)", () => {
+>>>>>>> 1e31d976 (rewards: depositVaultShares pre-NAV; add tests)
   it("deploys and can call syncVault (env-gated)", async function () {
     const publicClient = await hre.viem.getPublicClient();
     const [walletClient] = await hre.viem.getWalletClients();
